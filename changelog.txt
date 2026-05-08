@@ -1,5 +1,8 @@
 MCM Site Optimizer — Changelog
 
+= 1.2.2 (2026-05-08) =
+* Verificatie self-update flow (geen functionele wijzigingen)
+
 = 1.2.1 (2026-05-08) =
 * Nieuw: Self-update via publieke GitHub repo (plugin-update-checker v5.6)
 * Nieuw: Plugin URI + Update URI in plugin-header
