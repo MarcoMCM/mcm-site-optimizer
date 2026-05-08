@@ -53,6 +53,7 @@ class MCM_Optimizer_Client_Role {
 		add_action( 'admin_notices',              [ __CLASS__, 'editor_conversion_notice' ] );
 		add_action( 'wp_ajax_mcm_convert_editors',       [ __CLASS__, 'ajax_convert_editors' ] );
 		add_action( 'wp_ajax_mcm_dismiss_editor_notice', [ __CLASS__, 'ajax_dismiss_notice' ] );
+
 	}
 
 	/**

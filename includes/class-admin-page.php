@@ -37,20 +37,10 @@ class MCM_Optimizer_Admin_Page {
 	}
 
 	public function add_menu() {
-		add_menu_page(
-			'MCM Tools',
-			'MCM Tools',
-			'manage_options',
-			'mcm-tools',
-			[ $this, 'render_page' ],
-			'dashicons-performance',
-			80
-		);
-
 		add_submenu_page(
-			'mcm-tools',
-			'Site Optimizer',
-			'Optimizer',
+			'options-general.php',
+			'MCM Site Optimizer',
+			'MCM Optimizer',
 			'manage_options',
 			'mcm-tools',
 			[ $this, 'render_page' ]
@@ -58,7 +48,7 @@ class MCM_Optimizer_Admin_Page {
 	}
 
 	public function enqueue_assets( $hook ) {
-		if ( 'toplevel_page_mcm-tools' !== $hook ) {
+		if ( 'settings_page_mcm-tools' !== $hook ) {
 			return;
 		}
 		wp_add_inline_style( 'wp-admin', $this->get_css() );

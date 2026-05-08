@@ -1,0 +1,27 @@
+MCM Site Optimizer — Changelog
+
+= 1.2.1 (2026-05-08) =
+* Nieuw: Self-update via publieke GitHub repo (plugin-update-checker v5.6)
+* Nieuw: Plugin URI + Update URI in plugin-header
+* Geen functionele wijzigingen ten opzichte van 1.2.0
+
+= 1.1.1 (2026-04-16) =
+* Fix: Veiligheidsklep versterkt met user_has_cap filter (priority 999999)
+* Fix: Overwint hardener/security plugins die capabilities strippen via filters
+* MarcoMCM kan nu ALTIJD plugins installeren, ongeacht andere plugins
+
+= 1.1.0 (2026-04-16) =
+* Nieuw: MCM Klant rol met beperkte rechten voor klanten
+* Nieuw: Backend opschoning (menus, dashboard, admin bar) voor MCM Klant
+* Nieuw: Dashboard welkomst-widget met handleiding-link en contactinfo
+* Nieuw: Admin-melding om Editor-gebruikers om te zetten naar MCM Klant
+* Nieuw: Veiligheidsklep — MarcoMCM behoudt altijd volledige admin-rechten
+* Nieuw: MCM Optimizer menu verplaatst naar Instellingen
+* Fix: admin_menu hook priority verhoogd naar 99999 (voorkomt timing-issues)
+
+= 1.0.0 (2026-04-14) =
+* Database scanner (transients, revisies, auto-drafts, spam, orphaned meta, etc.)
+* Database cleaner met per-module aan/uit
+* WPVivid Backup Pro detectie en status
+* Health check na opschoning (frontend, admin-ajax, database, WooCommerce)
+* Admin pagina met MCM huisstijl
