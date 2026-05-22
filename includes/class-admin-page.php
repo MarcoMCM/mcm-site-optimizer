@@ -340,6 +340,14 @@ class MCM_Optimizer_Admin_Page {
 			<!-- ACTIE LOG -->
 			<?php $this->render_log(); ?>
 
+			<?php
+			/**
+			 * Render-punt voor losse modules (media scanner, performance, ...).
+			 * Modules haken hierop in om hun eigen kaart te tonen.
+			 */
+			do_action( 'mcm_optimizer_render_cards' );
+			?>
+
 		</div>
 
 		<script>

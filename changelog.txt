@@ -1,5 +1,13 @@
 MCM Site Optimizer — Changelog
 
+= 1.3.0 (2026-05-22) =
+* Nieuw: Module "Ongebruikte media" — detecteert afbeeldingen die nergens gebruikt
+  worden (uitgelichte afbeelding, WooCommerce-galerij, WPClever variatie-foto's,
+  content via ID en URL, logo/site-icon/customizer) en verplaatst ze terugzetbaar
+  naar de prullenbak. Inclusief terugzetten en definitief verwijderen, met
+  voortgangsbalk en veiligheids-hercontrole per afbeelding.
+* Nieuw: Render-hook 'mcm_optimizer_render_cards' zodat modules zelfstandig aanhaken.
+
 = 1.2.2 (2026-05-08) =
 * Verificatie self-update flow (geen functionele wijzigingen)
 
