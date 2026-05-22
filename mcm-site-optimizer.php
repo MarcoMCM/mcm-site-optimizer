@@ -38,6 +38,8 @@ require_once MCM_OPTIMIZER_DIR . 'includes/class-health-check.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-admin-page.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-client-role.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-media-scanner.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-performance.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-image-optim.php';
 
 /**
  * Main plugin class.
@@ -60,6 +62,8 @@ final class MCM_Site_Optimizer {
 		if ( is_admin() ) {
 			new MCM_Optimizer_Admin_Page();
 			new MCM_Media_Scanner();
+			new MCM_Performance();
+			new MCM_Image_Optim();
 		}
 	}
 
