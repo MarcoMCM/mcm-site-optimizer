@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MCM_OPTIMIZER_VERSION', '1.3.0' );
+define( 'MCM_OPTIMIZER_VERSION', '1.4.0' );
 define( 'MCM_OPTIMIZER_FILE', __FILE__ );
 define( 'MCM_OPTIMIZER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MCM_OPTIMIZER_URL', plugin_dir_url( __FILE__ ) );
@@ -40,6 +40,7 @@ require_once MCM_OPTIMIZER_DIR . 'includes/class-client-role.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-media-scanner.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-performance.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-image-optim.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-nepaccount-scanner.php';
 
 /**
  * Main plugin class.
@@ -64,6 +65,7 @@ final class MCM_Site_Optimizer {
 			new MCM_Media_Scanner();
 			new MCM_Performance();
 			new MCM_Image_Optim();
+			new MCM_Nepaccount_Scanner();
 		}
 	}
 
