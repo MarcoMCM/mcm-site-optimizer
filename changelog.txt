@@ -2,14 +2,17 @@ MCM Site Optimizer — Changelog
 
 = 1.4.0 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert
-  niets. Zoekt verdachte customer-accounts (geregistreerd op/na een instelbare cutoff,
-  nooit een WooCommerce-order, geen posts/comments). Wie ooit kocht of content heeft,
-  wordt altijd hard uitgesloten. Order-detectie werkt op HPOS én legacy-opslag.
-* Verdacht-signalen als niet-bindende flags (geen zelfstandige verwijdergrond):
-  Gmail dot/plus-trick naar dezelfde inbox, bulk-registratie in één piek-uur (10+),
-  e-mail op een verdachte TLD. Resultaat exporteerbaar als CSV.
+  niets. Scant alle customer-accounts (of alleen vanaf een instelbare datum). Niets
+  wordt vooraf weggelaten: ieder account verschijnt met flags, je filtert zelf.
+* Flags — harde feiten: 'geen-aankopen' (nooit een WooCommerce-order; HPOS én legacy)
+  en 'heeft-content' (heeft posts/comments, dus een echte gebruiker). Zachte
+  heuristieken: Gmail dot/plus-trick naar dezelfde inbox, bulk-registratie in één
+  piek-uur (10+), e-mail op een verdachte TLD.
+* Resultaat-filter per flag in drie standen (alle / moet wél / moet níét), zodat je
+  bijv. 'geen-aankopen' + 'bulk-registratie' kunt vereisen en 'heeft-content' uitsluiten.
+  Volledige lijst exporteerbaar als CSV.
 * Verwijderen volgt pas in een latere versie (Fase 2), met dubbele bevestiging — eerst
-  moet op echte data bevestigd worden dat de detectie-criteria kloppen.
+  moet op echte data bevestigd worden dat de selectie klopt.
 
 = 1.3.0 (2026-05-22) =
 * Nieuw: Module "Ongebruikte media" — detecteert afbeeldingen die nergens gebruikt
