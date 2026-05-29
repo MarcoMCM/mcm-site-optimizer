@@ -386,21 +386,21 @@ class MCM_Nepaccount_Scanner {
 		return <<<'JS'
 (function($){
 	var FLAGS = [
-		{key:'geen-aankopen',    label:'Geen aankopen',    color:'#9d2d2d'},
-		{key:'heeft-content',    label:'Heeft content',    color:'#3c6e47'},
-		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41'},
-		{key:'bulk-registratie', label:'Bulk-registratie', color:'#824131'},
-		{key:'spam-tld',         label:'Spam-TLD',         color:'#9d2d2d'}
+		{key:'geen-aankopen',    label:'Geen aankopen',    color:'#9d2d2d', desc:'Heeft nooit een WooCommerce-order geplaatst (HPOS en legacy gecontroleerd).'},
+		{key:'heeft-content',    label:'Heeft content',    color:'#3c6e47', desc:'Heeft posts of comments — bijvoorbeeld een productreview. Dit is een echte gebruiker; meestal NIET verwijderen.'},
+		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
+		{key:'bulk-registratie', label:'Bulk-registratie', color:'#824131', desc:'10 of meer accounts in hetzelfde uur aangemaakt — mogelijk een bot-golf of een import.'},
+		{key:'spam-tld',         label:'Spam-TLD',         color:'#9d2d2d', desc:'E-mail op een verdacht top-level domein (.ru, .cn, .tk, .xyz, ...).'}
 	];
-	var labelOf = {}, colorOf = {};
-	FLAGS.forEach(function(f){ labelOf[f.key]=f.label; colorOf[f.key]=f.color; });
+	var labelOf = {}, colorOf = {}, descOf = {};
+	FLAGS.forEach(function(f){ labelOf[f.key]=f.label; colorOf[f.key]=f.color; descOf[f.key]=f.desc; });
 
 	// Filterstatus per flag: 0 = alle, 1 = moet wel, 2 = moet niet.
 	var filterState = {};
 	FLAGS.forEach(function(f){ filterState[f.key]=0; });
 
 	function badge(f){
-		return '<span style="display:inline-block;padding:1px 7px;margin:1px 3px 1px 0;border-radius:3px;'
+		return '<span title="'+(descOf[f]||'')+'" style="display:inline-block;padding:1px 7px;margin:1px 3px 1px 0;border-radius:3px;cursor:help;'
 			+'font-size:10px;font-weight:600;color:#fff;background:'+(colorOf[f]||'#666')+'">'
 			+(labelOf[f]||f)+'</span>';
 	}
@@ -420,10 +420,11 @@ class MCM_Nepaccount_Scanner {
 	function renderFilterBar(totals){
 		var html = '<div style="background:#fff;border:1px solid #e4e6e8;border-radius:6px;padding:10px 12px;margin:6px 0 10px;">'
 			+'<strong style="font-size:12px;">Filter op flags</strong> '
-			+'<span style="font-size:11px;color:#646970;">(klik: alle &rarr; moet wél &rarr; moet níét)</span><br>';
+			+'<span style="font-size:11px;color:#646970;">(klik: alle &rarr; moet wél &rarr; moet níét &middot; hover voor uitleg)</span><br>';
 		FLAGS.forEach(function(f){
 			var s = filterState[f.key], cnt = totals[f.key]||0;
 			html += '<button type="button" class="mcm-nep-fbtn" data-flag="'+f.key+'" data-count="'+cnt+'" '
+				+'title="'+(descOf[f.key]||'')+'" '
 				+'style="'+FBTN_BASE+stateStyle(s)+'">'+btnText(f.key,cnt,s)+'</button>';
 		});
 		html += ' <button type="button" id="mcm-nep-reset" class="button button-small" style="margin-top:6px;">Reset filter</button>';
