@@ -10,8 +10,8 @@ MCM Site Optimizer — Changelog
   piek-uur (10+), e-mail op een verdachte TLD.
 * Resultaat-filter per flag in drie standen (alle / moet wél / moet níét), zodat je
   bijv. 'geen-aankopen' + 'bulk-registratie' kunt vereisen en 'heeft-content' uitsluiten.
-  Elke flag heeft een uitleg-tooltip (hover over de knop of badge). Volledige lijst
-  exporteerbaar als CSV.
+  Elke flag heeft uitleg via een tooltip (hover) en een uitklapbaar overzicht
+  ("Wat betekenen de flags?"). Volledige lijst exporteerbaar als CSV.
 * Verwijderen volgt pas in een latere versie (Fase 2), met dubbele bevestiging — eerst
   moet op echte data bevestigd worden dat de selectie klopt.
 * Wijziging: het scherm "MCM Optimizer" staat nu onder Gereedschap i.p.v. Instellingen.

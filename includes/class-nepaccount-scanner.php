@@ -429,6 +429,12 @@ class MCM_Nepaccount_Scanner {
 		});
 		html += ' <button type="button" id="mcm-nep-reset" class="button button-small" style="margin-top:6px;">Reset filter</button>';
 		html += '<div id="mcm-nep-count" style="margin-top:8px;font-size:12px;color:#646970;"></div>';
+		html += '<div style="margin-top:8px;"><a href="#" id="mcm-nep-legend-toggle" style="font-size:11px;text-decoration:none;">&#9656; Wat betekenen de flags?</a></div>';
+		html += '<div id="mcm-nep-legend" style="display:none;margin-top:6px;font-size:12px;color:#3c434a;">';
+		FLAGS.forEach(function(f){
+			html += '<div style="margin:4px 0;line-height:1.5;">'+badge(f.key)+' '+descOf[f.key]+'</div>';
+		});
+		html += '</div>';
 		html += '</div>';
 		return html;
 	}
@@ -520,6 +526,13 @@ class MCM_Nepaccount_Scanner {
 			$(this).attr('style', FBTN_BASE+stateStyle(0)).text(btnText(key,cnt,0));
 		});
 		applyFilter();
+	});
+
+	$(document).on('click','#mcm-nep-legend-toggle',function(e){
+		e.preventDefault();
+		var $l = $('#mcm-nep-legend');
+		$l.toggle();
+		$(this).html(($l.is(':visible')?'&#9662; ':'&#9656; ')+'Wat betekenen de flags?');
 	});
 })(jQuery);
 JS;
