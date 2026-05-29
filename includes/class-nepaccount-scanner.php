@@ -36,12 +36,13 @@ class MCM_Nepaccount_Scanner {
 	const DEFAULT_ROLE         = 'customer';
 	const BULK_THRESHOLD       = 10;  // 10+ registraties in 1 uur = piek
 	const DEFAULT_CUTOFF_MONTHS = 12;
+	const INACTIVE_MONTHS      = 12;  // wc_last_active leeg of ouder = langdurig inactief
 
 	/** Vaste flag-volgorde voor weergave + totalen. */
 	private static function flag_keys() {
 		// Alleen flags die op verwijderbare accounts kunnen voorkomen. Beschermde
 		// accounts (order/content/adres) worden niet getoond, dus die flags vervallen.
-		return [ 'geen-naam', 'heeft-contactformulier', 'gmail-dot-dup', 'gmail-puntjes', 'bulk-registratie', 'spam-tld' ];
+		return [ 'geen-naam', 'langdurig-inactief', 'heeft-contactformulier', 'gmail-dot-dup', 'gmail-puntjes', 'bulk-registratie', 'spam-tld' ];
 	}
 
 	public function __construct() {
@@ -164,6 +165,37 @@ class MCM_Nepaccount_Scanner {
 		$out = [];
 		foreach ( $wpdb->get_col( "SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE post_author IN ($in) AND post_type IN ('flamingo_contact','flamingo_inbound')" ) as $v ) {
 			$out[ (int) $v ] = true;
+		}
+		return $out;
+	}
+
+	/**
+	 * User-IDs die langdurig inactief zijn: geen wc_last_active, of ouder dan
+	 * INACTIVE_MONTHS. NB: WooCommerce zet wc_last_active vaak al bij registratie,
+	 * dus dit markeert vooral de écht dode accounts (nooit teruggekomen).
+	 *
+	 * @param array<int> $ids
+	 * @return array<int,bool>
+	 */
+	private static function users_inactive( array $ids ) {
+		global $wpdb;
+		if ( empty( $ids ) ) {
+			return [];
+		}
+		$in        = implode( ',', array_map( 'absint', $ids ) );
+		$threshold = time() - ( self::INACTIVE_MONTHS * 30 * DAY_IN_SECONDS );
+		$active    = [];
+		foreach ( $wpdb->get_results( "SELECT user_id, meta_value FROM {$wpdb->usermeta} WHERE user_id IN ($in) AND meta_key = 'wc_last_active'" ) as $r ) {
+			if ( (int) $r->meta_value >= $threshold ) {
+				$active[ (int) $r->user_id ] = true;
+			}
+		}
+		$out = [];
+		foreach ( $ids as $id ) {
+			$id = (int) $id;
+			if ( ! isset( $active[ $id ] ) ) {
+				$out[ $id ] = true;
+			}
 		}
 		return $out;
 	}
@@ -357,7 +389,8 @@ class MCM_Nepaccount_Scanner {
 		$content_uids = self::users_with_content( $ids_all ); // posts/comments
 		$noname_uids  = self::users_without_name( $ids_all );   // geen naam
 		$addr_uids    = self::users_with_address( $ids_all );   // factuuradres
-		$contact_uids = self::users_with_contactform( $ids_all ); // contactformulier
+		$contact_uids  = self::users_with_contactform( $ids_all ); // contactformulier
+		$inactive_uids = self::users_inactive( $ids_all );         // langdurig inactief
 
 		// Heuristiek-voorwerk: tel genormaliseerde e-mails en registratie-uren.
 		$norm_count = [];
@@ -391,6 +424,10 @@ class MCM_Nepaccount_Scanner {
 			if ( isset( $noname_uids[ $id ] ) ) {
 				$flags[] = 'geen-naam';
 				$flag_totals['geen-naam']++;
+			}
+			if ( isset( $inactive_uids[ $id ] ) ) {
+				$flags[] = 'langdurig-inactief';
+				$flag_totals['langdurig-inactief']++;
 			}
 			if ( isset( $contact_uids[ $id ] ) ) {
 				$flags[] = 'heeft-contactformulier';
@@ -708,6 +745,7 @@ class MCM_Nepaccount_Scanner {
 (function($){
 	var FLAGS = [
 		{key:'geen-naam',        label:'Geen naam',        color:'#9d2d2d', desc:'Geen voor-/achternaam en geen billing-/bedrijfsnaam ingevuld — wie echt wil kopen vult dit meestal wel in.'},
+		{key:'langdurig-inactief', label:'Lang inactief', color:'#7a5a8a', desc:'Nooit actief geweest of >12 maanden niet actief in de shop. NB: wc_last_active wordt vaak al bij registratie gezet, dus dit markeert vooral de echt dode accounts.'},
 		{key:'heeft-contactformulier', label:'Contactformulier', color:'#5b7a9d', desc:'Heeft een contactformulier ingestuurd (Flamingo) — teken van een echt mens, maar beschermt NIET automatisch tegen verwijderen.'},
 		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
 		{key:'gmail-puntjes',    label:'Gmail puntjes',    color:'#b95e41', desc:'Gmail-adres met een onnatuurlijk puntjespatroon (opeenvolgende puntjes of een punt tussen bijna elke letter) — typisch voor nep-/wegwerpaccounts, ook zonder gevonden tweeling.'},

@@ -33,6 +33,9 @@ MCM Site Optimizer — Changelog
   selectie wordt gewist zodra je het filter/zoekopdracht wijzigt. Voorheen telden
   aanvinkjes uit andere (verborgen) filters mee, waardoor je per ongeluk veel meer kon
   verwijderen dan de huidige weergave toonde.
+* Nieuw: flag 'langdurig-inactief' — nooit actief geweest of >12 maanden niet actief
+  (op basis van wc_last_active). Markeert vooral de echt dode accounts; combineer met
+  'geen-naam' voor een hogere-zekerheid selectie.
 * De scan toont nu ALLEEN verwijderbare accounts. Beschermde accounts (order/gast-order,
   content of adres) worden weggelaten uit de lijst (de samenvatting laat wel zien hoeveel
   er beschermd en niet getoond zijn). De flags geen-aankopen/heeft-content/heeft-adres
