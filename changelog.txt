@@ -33,6 +33,11 @@ MCM Site Optimizer — Changelog
   selectie wordt gewist zodra je het filter/zoekopdracht wijzigt. Voorheen telden
   aanvinkjes uit andere (verborgen) filters mee, waardoor je per ongeluk veel meer kon
   verwijderen dan de huidige weergave toonde.
+* De scan toont nu ALLEEN verwijderbare accounts. Beschermde accounts (order/gast-order,
+  content of adres) worden weggelaten uit de lijst (de samenvatting laat wel zien hoeveel
+  er beschermd en niet getoond zijn). De flags geen-aankopen/heeft-content/heeft-adres
+  vervallen daarmee in de weergave; over blijven: geen-naam, contactformulier,
+  gmail-dot-dup, gmail-puntjes, bulk-registratie, spam-tld.
 * Veiligheid: een order telt nu ook mee als hij op hetzelfde billing-e-mailadres staat,
   niet alleen via het gekoppelde account. Vangt GAST-aankopen (gast-checkout staat aan)
   van mensen die wel een account hebben maar als gast bestelden — die golden onterecht

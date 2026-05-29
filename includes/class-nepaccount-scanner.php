@@ -10,17 +10,20 @@
  *   - rol 'customer'
  *   - alle accounts, of alleen geregistreerd op/na een cutoff-datum (keuze in UI)
  *
- * Niets wordt vooraf uitgesloten — iedereen komt in de lijst, met flags. Filteren
- * gebeurt in het resultaat (tri-state per flag: alle / moet wel / moet niet).
+ * Er worden ALLEEN verwijderbare accounts getoond. Beschermde accounts worden
+ * weggelaten uit de lijst (er valt toch niets mee te doen), namelijk wie:
+ *   - een order heeft (gekoppeld OF gast-order op zelfde billing-e-mail; HPOS + legacy)
+ *   - posts/comments heeft (echte content)
+ *   - een factuuradres heeft ingevuld
+ * Het server-slot in delete_users() controleert dit nogmaals als vangnet.
  *
- * Flags — twee soorten:
- *   HARDE FEITEN (objectief uit de data):
- *     - geen-aankopen : nooit een WooCommerce-order (HPOS + legacy)
- *     - heeft-content : heeft posts of comments (= echte gebruiker)
- *   ZACHTE HEURISTIEKEN (signalen, kunnen vals-positief zijn):
- *     - gmail-dot-dup : Gmail dot/plus-trick wijst naar dezelfde inbox als ander account
- *     - bulk-registratie : geregistreerd in een piek-uur (mogelijk bot-golf of import)
- *     - spam-tld : e-mail op een verdachte TLD (.ru, .cn, ...)
+ * Getoonde flags (signalen onder de verwijderbare accounts):
+ *   - geen-naam : geen profiel-/billing-/bedrijfsnaam
+ *   - heeft-contactformulier : Flamingo-inzending (info, geen bescherming)
+ *   - gmail-dot-dup : Gmail dot/plus-trick wijst naar dezelfde inbox als ander account
+ *   - gmail-puntjes : onnatuurlijk puntjespatroon in een Gmail-adres
+ *   - bulk-registratie : geregistreerd in een piek-uur (mogelijk bot-golf of import)
+ *   - spam-tld : e-mail op een verdachte TLD (.ru, .cn, ...)
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -36,7 +39,9 @@ class MCM_Nepaccount_Scanner {
 
 	/** Vaste flag-volgorde voor weergave + totalen. */
 	private static function flag_keys() {
-		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'heeft-contactformulier', 'gmail-dot-dup', 'gmail-puntjes', 'bulk-registratie', 'spam-tld' ];
+		// Alleen flags die op verwijderbare accounts kunnen voorkomen. Beschermde
+		// accounts (order/content/adres) worden niet getoond, dus die flags vervallen.
+		return [ 'geen-naam', 'heeft-contactformulier', 'gmail-dot-dup', 'gmail-puntjes', 'bulk-registratie', 'spam-tld' ];
 	}
 
 	public function __construct() {
@@ -366,38 +371,31 @@ class MCM_Nepaccount_Scanner {
 
 		$spam_tlds = array_flip( self::spam_tlds() );
 
-		// Bouw lijst + flags.
+		// Bouw lijst + flags. Beschermde accounts (order/gast-order, content, adres) tonen
+		// we NIET — daar valt toch niets mee te doen, en het server-slot weigert ze sowieso.
+		// We laten alleen verwijderbare accounts zien, met hun signalen.
 		$candidates  = [];
+		$protected   = 0;
 		$flag_totals = array_fill_keys( self::flag_keys(), 0 );
 
 		foreach ( $rows as $r ) {
-			$id    = (int) $r->ID;
-			$flags = [];
+			$id = (int) $r->ID;
 
-			// Harde feiten. Order telt via gekoppeld account OF via billing-e-mail (gast).
 			$has_order = isset( $order_uids[ $id ] ) || isset( $order_emails[ strtolower( trim( $r->user_email ) ) ] );
-			if ( ! $has_order ) {
-				$flags[] = 'geen-aankopen';
-				$flag_totals['geen-aankopen']++;
+			if ( $has_order || isset( $content_uids[ $id ] ) || isset( $addr_uids[ $id ] ) ) {
+				$protected++;
+				continue; // beschermd -> niet tonen.
 			}
+
+			$flags = [];
 			if ( isset( $noname_uids[ $id ] ) ) {
 				$flags[] = 'geen-naam';
 				$flag_totals['geen-naam']++;
-			}
-			if ( isset( $content_uids[ $id ] ) ) {
-				$flags[] = 'heeft-content';
-				$flag_totals['heeft-content']++;
-			}
-			if ( isset( $addr_uids[ $id ] ) ) {
-				$flags[] = 'heeft-adres';
-				$flag_totals['heeft-adres']++;
 			}
 			if ( isset( $contact_uids[ $id ] ) ) {
 				$flags[] = 'heeft-contactformulier';
 				$flag_totals['heeft-contactformulier']++;
 			}
-
-			// Zachte heuristieken.
 			$n = self::normalize_email( $r->user_email );
 			if ( ( $norm_count[ $n ] ?? 0 ) > 1 ) {
 				$flags[] = 'gmail-dot-dup';
@@ -430,6 +428,8 @@ class MCM_Nepaccount_Scanner {
 			'scope'       => $cutoff ? 'date' : 'all',
 			'cutoff'      => $cutoff,
 			'total'       => $total,
+			'shown'       => count( $candidates ),
+			'protected'   => $protected,
 			'flag_totals' => $flag_totals,
 			'scanned_at'  => current_time( 'mysql' ),
 		];
@@ -444,6 +444,8 @@ class MCM_Nepaccount_Scanner {
 			'scope'       => $cutoff ? 'date' : 'all',
 			'cutoff'      => $cutoff,
 			'total'       => 0,
+			'shown'       => 0,
+			'protected'   => 0,
 			'flag_totals' => array_fill_keys( self::flag_keys(), 0 ),
 			'scanned_at'  => current_time( 'mysql' ),
 		];
@@ -669,8 +671,9 @@ class MCM_Nepaccount_Scanner {
 			</div>
 			<div class="mcm-opt-card-body">
 				<p class="description" style="margin-top:0;">
-					Scant <strong>customer</strong>-accounts en toont per account flags. Niets wordt
-					vooraf weggelaten — je filtert zelf in het resultaat. <strong>Deze scan verwijdert niets.</strong>
+					Scant <strong>customer</strong>-accounts en toont alleen de <strong>verwijderbare</strong>:
+					geen aankoop (ook geen gast-order), geen content en geen factuuradres. Accounts die
+					beschermd zijn worden niet getoond. <strong>Deze scan verwijdert niets.</strong>
 				</p>
 
 				<p style="margin:10px 0;">
@@ -704,10 +707,7 @@ class MCM_Nepaccount_Scanner {
 		return <<<'JS'
 (function($){
 	var FLAGS = [
-		{key:'geen-aankopen',    label:'Geen aankopen',    color:'#9d2d2d', desc:'Heeft nooit een WooCommerce-order geplaatst (HPOS en legacy gecontroleerd).'},
-		{key:'geen-naam',        label:'Geen naam',        color:'#9d2d2d', desc:'Geen voor- en achternaam ingevuld — wie echt wil kopen vult dit meestal wel in.'},
-		{key:'heeft-content',    label:'Heeft content',    color:'#3c6e47', desc:'Heeft posts of comments — bijvoorbeeld een productreview. Dit is een echte gebruiker; meestal NIET verwijderen.'},
-		{key:'heeft-adres',      label:'Heeft adres',      color:'#3c6e47', desc:'Heeft een factuuradres ingevuld — vrijwel zeker een echte (intentionele) klant; wordt NIET verwijderd.'},
+		{key:'geen-naam',        label:'Geen naam',        color:'#9d2d2d', desc:'Geen voor-/achternaam en geen billing-/bedrijfsnaam ingevuld — wie echt wil kopen vult dit meestal wel in.'},
 		{key:'heeft-contactformulier', label:'Contactformulier', color:'#5b7a9d', desc:'Heeft een contactformulier ingestuurd (Flamingo) — teken van een echt mens, maar beschermt NIET automatisch tegen verwijderen.'},
 		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
 		{key:'gmail-puntjes',    label:'Gmail puntjes',    color:'#b95e41', desc:'Gmail-adres met een onnatuurlijk puntjespatroon (opeenvolgende puntjes of een punt tussen bijna elke letter) — typisch voor nep-/wegwerpaccounts, ook zonder gevonden tweeling.'},
@@ -808,7 +808,7 @@ class MCM_Nepaccount_Scanner {
 
 	function renderDeleteControl(){
 		var html = '<div style="border:1px solid #f0c0c0;background:#fff6f6;border-radius:6px;padding:12px 14px;">'
-			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare". Beschermde accounts (order, content of adres) hebben een grijs, uitgevinkt vakje en kun je niet aanvinken. <strong>Let op:</strong> je selectie wordt gewist zodra je het filter of de zoekopdracht wijzigt — je verwijdert dus altijd alleen wat je nu ziet en aanvinkt.</p>'
+			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Alle getoonde accounts zijn verwijderbaar (geen aankoop, geen content, geen adres). Vink aan wat weg mag — tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare". <strong>Let op:</strong> je selectie wordt gewist zodra je het filter of de zoekopdracht wijzigt — je verwijdert dus altijd alleen wat je nu ziet en aanvinkt.</p>'
 			+'<button type="button" id="mcm-nep-sel-all" class="button button-small">Selecteer alle zichtbare</button> '
 			+'<button type="button" id="mcm-nep-desel-all" class="button button-small">Deselecteer alle</button><br><br>'
 			+'<button type="button" id="mcm-nep-del-start" class="button" style="background:#9d2d2d;border-color:#7d2222;color:#fff;">'
@@ -887,9 +887,10 @@ class MCM_Nepaccount_Scanner {
 			var ftLine = FLAGS.map(function(f){ return labelOf[f.key]+' '+(ft[f.key]||0); }).join(' &middot; ');
 			$('#mcm-nep-summary').show().html(
 				'<div style="background:#f6f7f7;border:1px solid #e4e6e8;border-radius:6px;padding:12px 14px;margin:6px 0 10px;">'
-				+'<strong>'+c.length+' customer-accounts</strong> gescand ('+scopeText+').<br>'
-				+'<span style="font-size:12px;color:#646970;">'+ftLine+'</span></div>'
-				+ (c.length ? '<p><a href="'+MCM_NEP.export+'" class="button">Exporteer CSV (volledige lijst)</a></p>' : '')
+				+'<strong>'+(s.total||0)+' customer-accounts</strong> gescand ('+scopeText+').<br>'
+				+'<strong>'+c.length+' verwijderbaar getoond</strong> &middot; '+(s.protected||0)+' beschermd (order/content/adres) — niet getoond.<br>'
+				+'<span style="font-size:12px;color:#646970;">Signalen onder de getoonde accounts: '+ftLine+'</span></div>'
+				+ (c.length ? '<p><a href="'+MCM_NEP.export+'" class="button">Exporteer CSV (getoonde lijst)</a></p>' : '<p>Geen verwijderbare accounts gevonden.</p>')
 			);
 
 			if(!c.length){ return; }
@@ -901,17 +902,10 @@ class MCM_Nepaccount_Scanner {
 			var rows = '';
 			c.forEach(function(x){
 				var flags = x.flags||[];
-				var has = function(k){ return flags.indexOf(k)>=0; };
-				// Beschermd = order (geen 'geen-aankopen'), content of adres — spiegelt het server-slot.
-				var prot = (!has('geen-aankopen')) || has('heeft-content') || has('heeft-adres');
-				var preason = !has('geen-aankopen') ? 'heeft een order' : (has('heeft-adres') ? 'heeft een factuuradres' : 'heeft posts/comments');
-				var cb = prot
-					? '<td style="text-align:center;" title="Beschermd: '+preason+'"><input type="checkbox" class="mcm-nep-cb" disabled /></td>'
-					: '<td style="text-align:center;"><input type="checkbox" class="mcm-nep-cb" /></td>';
 				var fl = flags.map(badge).join('') || '<span style="color:#999;font-size:11px;">&mdash;</span>';
 				var srch = (x.id+' '+(x.login||'')+' '+(x.email||'')).toLowerCase().replace(/"/g,'');
-				rows += '<tr data-id="'+x.id+'" data-flags="'+flags.join(' ')+'" data-search="'+srch+'"'+(prot?' style="color:#9aa0a6;"':'')+'>'
-					+cb
+				rows += '<tr data-id="'+x.id+'" data-flags="'+flags.join(' ')+'" data-search="'+srch+'">'
+					+'<td style="text-align:center;"><input type="checkbox" class="mcm-nep-cb" /></td>'
 					+'<td>'+x.id+'</td><td>'+esc(x.login)+'</td><td>'+esc(x.email)+'</td>'
 					+'<td>'+esc(x.registered)+'</td><td>'+fl+'</td></tr>';
 			});
