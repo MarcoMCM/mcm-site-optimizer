@@ -1,6 +1,6 @@
 MCM Site Optimizer — Changelog
 
-= 1.4.0 (2026-05-28) =
+= 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert
   niets. Scant alle customer-accounts (of alleen vanaf een instelbare datum). Niets
   wordt vooraf weggelaten: ieder account verschijnt met flags, je filtert zelf.
@@ -13,6 +13,7 @@ MCM Site Optimizer — Changelog
   Volledige lijst exporteerbaar als CSV.
 * Verwijderen volgt pas in een latere versie (Fase 2), met dubbele bevestiging — eerst
   moet op echte data bevestigd worden dat de selectie klopt.
+* Wijziging: het scherm "MCM Optimizer" staat nu onder Gereedschap i.p.v. Instellingen.
 
 = 1.3.0 (2026-05-22) =
 * Nieuw: Module "Ongebruikte media" — detecteert afbeeldingen die nergens gebruikt
