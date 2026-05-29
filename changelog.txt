@@ -26,6 +26,9 @@ MCM Site Optimizer — Changelog
   telling klopt. Het server-slot weigerde ze altijd al; dit maakt het duidelijk.
 * 'geen-naam' kijkt nu ook naar billing-naam en bedrijfsnaam, zodat zakelijke
   klanten (alleen bedrijf/billing ingevuld) niet onterecht als naamloos gelden.
+* Nieuw: flag 'gmail-puntjes' — Gmail-adres met onnatuurlijk puntjespatroon
+  (opeenvolgende puntjes of een punt tussen bijna elke letter), ook zonder gevonden
+  tweeling. Vangt de Gmail dot-truc die 'gmail-dot-dup' (alleen duplicaten) mist.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert

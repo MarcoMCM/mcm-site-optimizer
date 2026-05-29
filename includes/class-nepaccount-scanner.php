@@ -36,7 +36,7 @@ class MCM_Nepaccount_Scanner {
 
 	/** Vaste flag-volgorde voor weergave + totalen. */
 	private static function flag_keys() {
-		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'heeft-contactformulier', 'gmail-dot-dup', 'bulk-registratie', 'spam-tld' ];
+		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'heeft-contactformulier', 'gmail-dot-dup', 'gmail-puntjes', 'bulk-registratie', 'spam-tld' ];
 	}
 
 	public function __construct() {
@@ -232,6 +232,43 @@ class MCM_Nepaccount_Scanner {
 		return $dot === false ? '' : strtolower( substr( $domain, $dot + 1 ) );
 	}
 
+	/**
+	 * Verdacht Gmail-puntjespatroon: opeenvolgende puntjes, een begin-/eind-punt,
+	 * of een punt tussen bijna elke letter. Typisch voor nep-/wegwerpaccounts
+	 * (de Gmail dot-truc) — óók als er (nog) geen tweeling-account bestaat.
+	 */
+	private static function suspicious_gmail_dots( $email ) {
+		$email = strtolower( trim( $email ) );
+		$at    = strrpos( $email, '@' );
+		if ( false === $at ) {
+			return false;
+		}
+		$local  = substr( $email, 0, $at );
+		$domain = substr( $email, $at + 1 );
+		if ( ! in_array( $domain, [ 'gmail.com', 'googlemail.com' ], true ) ) {
+			return false;
+		}
+		// Plus-suffix negeren voor de analyse.
+		$plus = strpos( $local, '+' );
+		if ( false !== $plus ) {
+			$local = substr( $local, 0, $plus );
+		}
+		$dots = substr_count( $local, '.' );
+		if ( 0 === $dots ) {
+			return false;
+		}
+		// Opeenvolgende puntjes of begin-/eind-punt = onnatuurlijk.
+		if ( false !== strpos( $local, '..' ) || '.' === $local[0] || '.' === substr( $local, -1 ) ) {
+			return true;
+		}
+		// Punt tussen (bijna) elke letter (bv. d.a.v.i.d.m.s).
+		$letters = strlen( preg_replace( '/[^a-z0-9]/', '', $local ) );
+		if ( $dots >= 4 && $letters > 0 && $dots >= $letters * 0.5 ) {
+			return true;
+		}
+		return false;
+	}
+
 	/* ---------------------------------------------------------------
 	 * Hoofdscan
 	 * ------------------------------------------------------------- */
@@ -329,6 +366,10 @@ class MCM_Nepaccount_Scanner {
 			if ( ( $norm_count[ $n ] ?? 0 ) > 1 ) {
 				$flags[] = 'gmail-dot-dup';
 				$flag_totals['gmail-dot-dup']++;
+			}
+			if ( self::suspicious_gmail_dots( $r->user_email ) ) {
+				$flags[] = 'gmail-puntjes';
+				$flag_totals['gmail-puntjes']++;
 			}
 			$h = substr( $r->user_registered, 0, 13 );
 			if ( ( $hour_count[ $h ] ?? 0 ) >= self::BULK_THRESHOLD ) {
@@ -628,6 +669,7 @@ class MCM_Nepaccount_Scanner {
 		{key:'heeft-adres',      label:'Heeft adres',      color:'#3c6e47', desc:'Heeft een factuuradres ingevuld — vrijwel zeker een echte (intentionele) klant; wordt NIET verwijderd.'},
 		{key:'heeft-contactformulier', label:'Contactformulier', color:'#5b7a9d', desc:'Heeft een contactformulier ingestuurd (Flamingo) — teken van een echt mens, maar beschermt NIET automatisch tegen verwijderen.'},
 		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
+		{key:'gmail-puntjes',    label:'Gmail puntjes',    color:'#b95e41', desc:'Gmail-adres met een onnatuurlijk puntjespatroon (opeenvolgende puntjes of een punt tussen bijna elke letter) — typisch voor nep-/wegwerpaccounts, ook zonder gevonden tweeling.'},
 		{key:'bulk-registratie', label:'Bulk-registratie', color:'#824131', desc:'10 of meer accounts in hetzelfde uur aangemaakt — mogelijk een bot-golf of een import.'},
 		{key:'spam-tld',         label:'Spam-TLD',         color:'#9d2d2d', desc:'E-mail op een verdacht top-level domein (.ru, .cn, .tk, .xyz, ...).'}
 	];
@@ -796,16 +838,11 @@ class MCM_Nepaccount_Scanner {
 			var ft = s.flag_totals || {};
 			var scopeText = s.scope==='date' ? ('vanaf '+(s.cutoff||'').substring(0,10)) : 'alle klanten';
 
+			var ftLine = FLAGS.map(function(f){ return labelOf[f.key]+' '+(ft[f.key]||0); }).join(' &middot; ');
 			$('#mcm-nep-summary').show().html(
 				'<div style="background:#f6f7f7;border:1px solid #e4e6e8;border-radius:6px;padding:12px 14px;margin:6px 0 10px;">'
 				+'<strong>'+c.length+' customer-accounts</strong> gescand ('+scopeText+').<br>'
-				+'<span style="font-size:12px;color:#646970;">'
-				+'Geen aankopen '+(ft['geen-aankopen']||0)+' &middot; '
-				+'Heeft content '+(ft['heeft-content']||0)+' &middot; '
-				+'Gmail dot-dup '+(ft['gmail-dot-dup']||0)+' &middot; '
-				+'Bulk-registratie '+(ft['bulk-registratie']||0)+' &middot; '
-				+'Spam-TLD '+(ft['spam-tld']||0)
-				+'</span></div>'
+				+'<span style="font-size:12px;color:#646970;">'+ftLine+'</span></div>'
 				+ (c.length ? '<p><a href="'+MCM_NEP.export+'" class="button">Exporteer CSV (volledige lijst)</a></p>' : '')
 			);
 
