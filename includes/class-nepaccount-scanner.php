@@ -130,7 +130,9 @@ class MCM_Nepaccount_Scanner {
 	}
 
 	/**
-	 * User-IDs ZONDER ingevulde naam (geen voor- én geen achternaam).
+	 * User-IDs ZONDER enige naam: geen profiel-naam, geen billing-naam en geen
+	 * bedrijfsnaam. Zo vallen zakelijke klanten (alleen bedrijf/billing ingevuld)
+	 * niet onverdiend onder 'geen-naam'.
 	 *
 	 * @param array<int> $ids
 	 * @return array<int,bool>
@@ -144,7 +146,8 @@ class MCM_Nepaccount_Scanner {
 		$has = [];
 		$rows = $wpdb->get_results(
 			"SELECT user_id, meta_value FROM {$wpdb->usermeta}
-			 WHERE user_id IN ($in) AND meta_key IN ('first_name','last_name')"
+			 WHERE user_id IN ($in)
+			   AND meta_key IN ('first_name','last_name','billing_first_name','billing_last_name','billing_company')"
 		);
 		foreach ( $rows as $r ) {
 			if ( '' !== trim( (string) $r->meta_value ) ) {
@@ -717,7 +720,7 @@ class MCM_Nepaccount_Scanner {
 
 	function renderDeleteControl(){
 		var html = '<div style="border:1px solid #f0c0c0;background:#fff6f6;border-radius:6px;padding:12px 14px;">'
-			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare".</p>'
+			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare". Beschermde accounts (order, content of adres) hebben een grijs, uitgevinkt vakje en kun je niet aanvinken.</p>'
 			+'<button type="button" id="mcm-nep-sel-all" class="button button-small">Selecteer alle zichtbare</button> '
 			+'<button type="button" id="mcm-nep-desel-all" class="button button-small">Deselecteer alle</button><br><br>'
 			+'<button type="button" id="mcm-nep-del-start" class="button" style="background:#9d2d2d;border-color:#7d2222;color:#fff;">'
@@ -814,10 +817,18 @@ class MCM_Nepaccount_Scanner {
 
 			var rows = '';
 			c.forEach(function(x){
-				var fl = (x.flags||[]).map(badge).join('') || '<span style="color:#999;font-size:11px;">&mdash;</span>';
+				var flags = x.flags||[];
+				var has = function(k){ return flags.indexOf(k)>=0; };
+				// Beschermd = order (geen 'geen-aankopen'), content of adres — spiegelt het server-slot.
+				var prot = (!has('geen-aankopen')) || has('heeft-content') || has('heeft-adres');
+				var preason = !has('geen-aankopen') ? 'heeft een order' : (has('heeft-adres') ? 'heeft een factuuradres' : 'heeft posts/comments');
+				var cb = prot
+					? '<td style="text-align:center;" title="Beschermd: '+preason+'"><input type="checkbox" class="mcm-nep-cb" disabled /></td>'
+					: '<td style="text-align:center;"><input type="checkbox" class="mcm-nep-cb" /></td>';
+				var fl = flags.map(badge).join('') || '<span style="color:#999;font-size:11px;">&mdash;</span>';
 				var srch = (x.id+' '+(x.login||'')+' '+(x.email||'')).toLowerCase().replace(/"/g,'');
-				rows += '<tr data-id="'+x.id+'" data-flags="'+(x.flags||[]).join(' ')+'" data-search="'+srch+'">'
-					+'<td style="text-align:center;"><input type="checkbox" class="mcm-nep-cb" /></td>'
+				rows += '<tr data-id="'+x.id+'" data-flags="'+flags.join(' ')+'" data-search="'+srch+'"'+(prot?' style="color:#9aa0a6;"':'')+'>'
+					+cb
 					+'<td>'+x.id+'</td><td>'+esc(x.login)+'</td><td>'+esc(x.email)+'</td>'
 					+'<td>'+esc(x.registered)+'</td><td>'+fl+'</td></tr>';
 			});
@@ -883,11 +894,11 @@ class MCM_Nepaccount_Scanner {
 	$(document).on('change','.mcm-nep-cb', updateDeleteCount);
 	$(document).on('change','#mcm-nep-cb-all', function(){
 		var c=this.checked;
-		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb').prop('checked', c);
+		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb:not(:disabled)').prop('checked', c);
 		updateDeleteCount();
 	});
 	$(document).on('click','#mcm-nep-sel-all', function(){
-		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb').prop('checked', true);
+		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb:not(:disabled)').prop('checked', true);
 		updateDeleteCount();
 	});
 	$(document).on('click','#mcm-nep-desel-all', function(){

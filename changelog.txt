@@ -21,6 +21,11 @@ MCM Site Optimizer — Changelog
   content: auteur van post/pagina + reviews (comments).
 * Nieuw: flag 'heeft-contactformulier' (Flamingo-inzending) — alleen ter info/filtering,
   beschermt NIET automatisch tegen verwijderen.
+* Beschermde accounts (order, content of adres) zijn nu in de tabel onaanvinkbaar
+  (grijs, uitgevinkt vakje met reden), zodat de bescherming zichtbaar is en de
+  telling klopt. Het server-slot weigerde ze altijd al; dit maakt het duidelijk.
+* 'geen-naam' kijkt nu ook naar billing-naam en bedrijfsnaam, zodat zakelijke
+  klanten (alleen bedrijf/billing ingevuld) niet onterecht als naamloos gelden.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert
