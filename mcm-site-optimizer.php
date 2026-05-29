@@ -3,7 +3,7 @@
  * Plugin Name: MCM Site Optimizer
  * Plugin URI:  https://github.com/MarcoMCM/mcm-site-optimizer
  * Description: Site optimalisatie tool voor MCM Websites klanten. Database opschoning, ongebruikte media detectie, image sizes beheer en meer.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Author: MCM Websites
  * Author URI: https://mcmwebsites.nl
  * Update URI: https://github.com/MarcoMCM/mcm-site-optimizer
