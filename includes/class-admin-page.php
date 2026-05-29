@@ -38,7 +38,7 @@ class MCM_Optimizer_Admin_Page {
 
 	public function add_menu() {
 		add_submenu_page(
-			'options-general.php',
+			'tools.php',
 			'MCM Site Optimizer',
 			'MCM Optimizer',
 			'manage_options',
@@ -48,7 +48,7 @@ class MCM_Optimizer_Admin_Page {
 	}
 
 	public function enqueue_assets( $hook ) {
-		if ( 'settings_page_mcm-tools' !== $hook ) {
+		if ( 'tools_page_mcm-tools' !== $hook ) {
 			return;
 		}
 		wp_add_inline_style( 'wp-admin', $this->get_css() );

@@ -329,7 +329,7 @@ class MCM_Performance {
 	}
 
 	public function assets( $hook ) {
-		if ( 'settings_page_mcm-tools' !== $hook ) {
+		if ( 'tools_page_mcm-tools' !== $hook ) {
 			return;
 		}
 		wp_add_inline_script( 'jquery', $this->get_js() );
