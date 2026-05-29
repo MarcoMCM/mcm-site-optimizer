@@ -29,6 +29,10 @@ MCM Site Optimizer — Changelog
 * Nieuw: flag 'gmail-puntjes' — Gmail-adres met onnatuurlijk puntjespatroon
   (opeenvolgende puntjes of een punt tussen bijna elke letter), ook zonder gevonden
   tweeling. Vangt de Gmail dot-truc die 'gmail-dot-dup' (alleen duplicaten) mist.
+* Veiligheid: verwijderen werkt nu uitsluitend op ZICHTBARE aangevinkte rijen, en de
+  selectie wordt gewist zodra je het filter/zoekopdracht wijzigt. Voorheen telden
+  aanvinkjes uit andere (verborgen) filters mee, waardoor je per ongeluk veel meer kon
+  verwijderen dan de huidige weergave toonde.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert

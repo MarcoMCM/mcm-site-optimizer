@@ -722,6 +722,10 @@ class MCM_Nepaccount_Scanner {
 	}
 
 	function applyFilter(){
+		// VEILIGHEID: selectie wissen bij elke filter-/zoekwijziging, zodat je nooit
+		// in een ander filter aangevinkte (verborgen) rijen meeneemt bij verwijderen.
+		$('#mcm-nep-results .mcm-nep-cb').prop('checked', false);
+		$('#mcm-nep-cb-all').prop('checked', false);
 		var req=[], exc=[];
 		FLAGS.forEach(function(f){
 			if(filterState[f.key]===1){ req.push(f.key); }
@@ -745,7 +749,8 @@ class MCM_Nepaccount_Scanner {
 
 	function checkedIds(){
 		var ids=[];
-		$('#mcm-nep-results tbody tr').each(function(){
+		// Alleen ZICHTBARE aangevinkte rijen — nooit verborgen rijen uit een ander filter.
+		$('#mcm-nep-results tbody tr:visible').each(function(){
 			if($(this).find('.mcm-nep-cb').is(':checked')){
 				var v=$(this).attr('data-id');
 				if(v){ ids.push(parseInt(v,10)); }
@@ -755,14 +760,14 @@ class MCM_Nepaccount_Scanner {
 	}
 
 	function updateDeleteCount(){
-		var n = $('#mcm-nep-results tbody tr .mcm-nep-cb:checked').length;
+		var n = $('#mcm-nep-results tbody tr:visible .mcm-nep-cb:checked').length;
 		$('#mcm-nep-del-count').text(n);
 		$('#mcm-nep-del-start').prop('disabled', n===0);
 	}
 
 	function renderDeleteControl(){
 		var html = '<div style="border:1px solid #f0c0c0;background:#fff6f6;border-radius:6px;padding:12px 14px;">'
-			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare". Beschermde accounts (order, content of adres) hebben een grijs, uitgevinkt vakje en kun je niet aanvinken.</p>'
+			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare". Beschermde accounts (order, content of adres) hebben een grijs, uitgevinkt vakje en kun je niet aanvinken. <strong>Let op:</strong> je selectie wordt gewist zodra je het filter of de zoekopdracht wijzigt — je verwijdert dus altijd alleen wat je nu ziet en aanvinkt.</p>'
 			+'<button type="button" id="mcm-nep-sel-all" class="button button-small">Selecteer alle zichtbare</button> '
 			+'<button type="button" id="mcm-nep-desel-all" class="button button-small">Deselecteer alle</button><br><br>'
 			+'<button type="button" id="mcm-nep-del-start" class="button" style="background:#9d2d2d;border-color:#7d2222;color:#fff;">'
