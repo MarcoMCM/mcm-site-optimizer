@@ -42,6 +42,7 @@ class MCM_Nepaccount_Scanner {
 	public function __construct() {
 		add_action( 'wp_ajax_mcm_nepaccount_scan',   [ $this, 'ajax_scan' ] );
 		add_action( 'wp_ajax_mcm_nepaccount_export', [ $this, 'ajax_export' ] );
+		add_action( 'wp_ajax_mcm_nepaccount_delete', [ $this, 'ajax_delete' ] );
 		add_action( 'mcm_optimizer_render_cards',    [ $this, 'render_card' ] );
 		add_action( 'admin_enqueue_scripts',         [ $this, 'assets' ] );
 	}
@@ -316,6 +317,137 @@ class MCM_Nepaccount_Scanner {
 		exit;
 	}
 
+	/* ---------------------------------------------------------------
+	 * Verwijderen (Fase 2) — alleen via expliciete bevestiging in de UI.
+	 * ------------------------------------------------------------- */
+
+	public function ajax_delete() {
+		check_ajax_referer( 'mcm_nepaccount', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Geen toegang.' );
+		}
+		$ids = isset( $_POST['ids'] ) ? (array) wp_unslash( $_POST['ids'] ) : [];
+		$ids = array_map( 'absint', $ids );
+
+		$result = self::delete_users( $ids );
+		wp_send_json_success( $result );
+	}
+
+	/**
+	 * Verwijder accounts — met een hard veiligheidsslot dat ONAFHANKELIJK van de
+	 * UI opnieuw controleert. Verwijdert ALLEEN een account dat:
+	 *   - bestaat, niet ID <= 1, niet de huidige gebruiker, geen super admin;
+	 *   - uitsluitend de rol 'customer' heeft (geen extra/privileged rollen);
+	 *   - geen WooCommerce-order heeft (HPOS + legacy);
+	 *   - geen posts/comments heeft.
+	 * Alles wat afvalt wordt overgeslagen mét reden. Vóór verwijderen wordt een
+	 * CSV-back-up weggeschreven in een afgeschermde uploads-map.
+	 *
+	 * @param array<int> $ids
+	 * @return array{deleted: array<int>, skipped: array<array{id:int,reason:string}>, log: string}
+	 */
+	public static function delete_users( array $ids ) {
+		if ( ! function_exists( 'wp_delete_user' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/user.php';
+		}
+
+		$ids = array_values( array_filter( array_unique( array_map( 'absint', $ids ) ) ) );
+		$deleted = [];
+		$skipped = [];
+		if ( empty( $ids ) ) {
+			return [ 'deleted' => [], 'skipped' => [], 'log' => '' ];
+		}
+
+		$order_uids   = self::users_with_orders();
+		$content_uids = self::users_with_content( $ids );
+		$current      = get_current_user_id();
+
+		$to_delete = [];
+		$to_log    = [];
+		foreach ( $ids as $id ) {
+			if ( $id <= 1 ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'beschermd account (ID <= 1)' ];
+				continue;
+			}
+			if ( $id === $current ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'huidige gebruiker' ];
+				continue;
+			}
+			$u = get_userdata( $id );
+			if ( ! $u ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'bestaat niet (al verwijderd?)' ];
+				continue;
+			}
+			$roles = array_values( (array) $u->roles );
+			if ( 1 !== count( $roles ) || ! in_array( 'customer', $roles, true ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'rol niet uitsluitend customer (' . implode( ',', $roles ) . ')' ];
+				continue;
+			}
+			if ( is_super_admin( $id ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'super admin' ];
+				continue;
+			}
+			if ( isset( $order_uids[ $id ] ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'heeft een order' ];
+				continue;
+			}
+			if ( isset( $content_uids[ $id ] ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'heeft posts/comments' ];
+				continue;
+			}
+			$to_delete[] = $id;
+			$to_log[]    = [ $id, $u->user_login, $u->user_email, $u->user_registered ];
+		}
+
+		// Back-up wegschrijven VOOR verwijderen.
+		$log_path = '';
+		if ( $to_log ) {
+			$log_path = self::append_delete_log( $to_log );
+		}
+
+		foreach ( $to_delete as $id ) {
+			if ( wp_delete_user( $id ) ) {
+				$deleted[] = $id;
+			} else {
+				$skipped[] = [ 'id' => $id, 'reason' => 'verwijderen mislukt' ];
+			}
+		}
+
+		return [ 'deleted' => $deleted, 'skipped' => $skipped, 'log' => $log_path ];
+	}
+
+	/**
+	 * Schrijf verwijderde accounts naar een afgeschermd CSV-logbestand.
+	 *
+	 * @param array<array{0:int,1:string,2:string,3:string}> $rows
+	 * @return string Pad naar het logbestand (of '' bij falen).
+	 */
+	private static function append_delete_log( array $rows ) {
+		$up  = wp_upload_dir();
+		$dir = trailingslashit( $up['basedir'] ) . 'mcm-nepaccount-logs';
+		if ( ! file_exists( $dir ) ) {
+			wp_mkdir_p( $dir );
+			// Webtoegang blokkeren (bevat e-mailadressen).
+			@file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" );
+			@file_put_contents( $dir . '/index.html', '' );
+		}
+		$file = trailingslashit( $dir ) . 'verwijderd-' . gmdate( 'Y-m-d' ) . '.csv';
+		$new  = ! file_exists( $file );
+		$fh   = fopen( $file, 'a' );
+		if ( ! $fh ) {
+			return '';
+		}
+		if ( $new ) {
+			fputcsv( $fh, [ 'deleted_at_utc', 'ID', 'user_login', 'user_email', 'user_registered' ] );
+		}
+		$now = gmdate( 'Y-m-d H:i:s' );
+		foreach ( $rows as $r ) {
+			fputcsv( $fh, array_merge( [ $now ], $r ) );
+		}
+		fclose( $fh );
+		return $file;
+	}
+
 	private static function sanitize_cutoff( $val ) {
 		// Verwacht 'Y-m-d' of 'Y-m-d H:i:s'. Anders default: X maanden terug.
 		if ( preg_match( '/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/', $val ) ) {
@@ -377,6 +509,7 @@ class MCM_Nepaccount_Scanner {
 				<div id="mcm-nep-summary" style="display:none;"></div>
 				<div id="mcm-nep-filter" style="display:none;"></div>
 				<div id="mcm-nep-results"></div>
+				<div id="mcm-nep-delete" style="margin-top:12px;"></div>
 			</div>
 		</div>
 		<?php
@@ -456,6 +589,81 @@ class MCM_Nepaccount_Scanner {
 			if(ok){ shown++; }
 		});
 		$('#mcm-nep-count').html('<strong>'+shown+'</strong> van '+total+' accounts getoond.');
+		updateDeleteCount();
+	}
+
+	function visibleIds(){
+		var ids=[];
+		$('#mcm-nep-results tbody tr:visible').each(function(){
+			var v=$(this).attr('data-id');
+			if(v){ ids.push(parseInt(v,10)); }
+		});
+		return ids;
+	}
+
+	function updateDeleteCount(){
+		var n = $('#mcm-nep-results tbody tr:visible').length;
+		$('#mcm-nep-del-count').text(n);
+		$('#mcm-nep-del-start').prop('disabled', n===0);
+	}
+
+	function renderDeleteControl(){
+		var html = '<div style="border:1px solid #f0c0c0;background:#fff6f6;border-radius:6px;padding:12px 14px;">'
+			+'<button type="button" id="mcm-nep-del-start" class="button" style="background:#9d2d2d;border-color:#7d2222;color:#fff;">'
+			+'Verwijder de getoonde selectie (<span id="mcm-nep-del-count">0</span>)</button>'
+			+'<div id="mcm-nep-del-confirm" style="display:none;margin-top:10px;">'
+			+'<p style="margin:.4em 0;color:#9d2d2d;"><strong>Let op: verwijderen is onomkeerbaar.</strong> Alleen accounts met uitsluitend de rol customer, zónder order en zónder posts/comments worden verwijderd; de rest wordt automatisch overgeslagen. Er wordt vóór verwijderen een CSV-back-up op de server weggeschreven.</p>'
+			+'<label style="display:block;margin:.4em 0;"><input type="checkbox" id="mcm-nep-del-backup"/> Ik heb een database-backup gemaakt.</label>'
+			+'<label style="display:block;margin:.4em 0;">Typ <strong>VERWIJDER</strong> om te bevestigen: <input type="text" id="mcm-nep-del-word" autocomplete="off" style="width:150px;"/></label>'
+			+'<button type="button" id="mcm-nep-del-go" class="button" disabled style="background:#9d2d2d;border-color:#7d2222;color:#fff;">Definitief verwijderen</button> '
+			+'<button type="button" id="mcm-nep-del-cancel" class="button">Annuleer</button>'
+			+'</div>'
+			+'<div id="mcm-nep-del-progress" style="margin-top:8px;font-size:13px;"></div>'
+			+'</div>';
+		$('#mcm-nep-delete').html(html);
+		updateDeleteCount();
+	}
+
+	function delGoState(){
+		var ok = ($('#mcm-nep-del-word').val()==='VERWIJDER') && $('#mcm-nep-del-backup').is(':checked');
+		$('#mcm-nep-del-go').prop('disabled', !ok);
+	}
+
+	function doDelete(ids){
+		var CHUNK=100, idx=0, deleted=0, skipped=[], logPath='';
+		var $prog=$('#mcm-nep-del-progress');
+		function finish(){
+			var msg='<strong>'+deleted+' accounts verwijderd.</strong>';
+			if(logPath){ msg+='<br><span style="font-size:12px;color:#646970;">Back-up: '+esc(logPath)+'</span>'; }
+			if(skipped.length){
+				msg+='<br>'+skipped.length+' overgeslagen door het veiligheidsslot:<br><ul style="margin:4px 0 0 18px;">';
+				skipped.slice(0,50).forEach(function(s){ msg+='<li>#'+s.id+' — '+esc(s.reason)+'</li>'; });
+				if(skipped.length>50){ msg+='<li>... en '+(skipped.length-50)+' meer</li>'; }
+				msg+='</ul>';
+			}
+			msg+='<br><em>Draai een nieuwe scan om de bijgewerkte lijst te zien.</em>';
+			$prog.html(msg);
+		}
+		function next(){
+			if(idx>=ids.length){ finish(); return; }
+			var batch=ids.slice(idx, idx+CHUNK);
+			$.post(MCM_NEP.ajax, { action:'mcm_nepaccount_delete', nonce:MCM_NEP.nonce, ids:batch })
+			.done(function(res){
+				if(res && res.success){
+					deleted += (res.data.deleted||[]).length;
+					skipped = skipped.concat(res.data.skipped||[]);
+					if(res.data.log){ logPath=res.data.log; }
+					idx += CHUNK;
+					$prog.text('Bezig... '+deleted+' verwijderd van max '+ids.length+'.');
+					next();
+				} else {
+					$prog.html('<span style="color:#9d2d2d;">Fout bij verwijderen. Gestopt na '+deleted+'.</span>');
+				}
+			})
+			.fail(function(){ $prog.html('<span style="color:#9d2d2d;">Serverfout. Gestopt na '+deleted+'.</span>'); });
+		}
+		$prog.text('Bezig met verwijderen...');
+		next();
 	}
 
 	$(document).on('click','#mcm-nep-scan',function(){
@@ -465,6 +673,7 @@ class MCM_Nepaccount_Scanner {
 		$('#mcm-nep-summary').hide().empty();
 		$('#mcm-nep-filter').hide().empty();
 		$('#mcm-nep-results').empty();
+		$('#mcm-nep-delete').empty();
 		$.post(MCM_NEP.ajax, { action:'mcm_nepaccount_scan', nonce:MCM_NEP.nonce, scope:scope, cutoff:cutoff })
 		.done(function(res){
 			$('#mcm-nep-loading').hide();
@@ -495,7 +704,7 @@ class MCM_Nepaccount_Scanner {
 			var rows = '';
 			c.forEach(function(x){
 				var fl = (x.flags||[]).map(badge).join('') || '<span style="color:#999;font-size:11px;">&mdash;</span>';
-				rows += '<tr data-flags="'+(x.flags||[]).join(' ')+'">'
+				rows += '<tr data-id="'+x.id+'" data-flags="'+(x.flags||[]).join(' ')+'">'
 					+'<td>'+x.id+'</td><td>'+esc(x.login)+'</td><td>'+esc(x.email)+'</td>'
 					+'<td>'+esc(x.registered)+'</td><td>'+fl+'</td></tr>';
 			});
@@ -503,9 +712,10 @@ class MCM_Nepaccount_Scanner {
 				'<table class="widefat striped" style="margin-top:4px;"><thead><tr>'
 				+'<th>ID</th><th>Login</th><th>E-mail</th><th>Geregistreerd</th><th>Flags</th>'
 				+'</tr></thead><tbody>'+rows+'</tbody></table>'
-				+'<p class="description" style="margin-top:8px;">Dit is alleen een overzicht. Verwijderen zit (nog) niet in deze versie — eerst controleren of de selectie klopt.</p>'
+				+'<p class="description" style="margin-top:8px;">Filter de lijst tot precies de accounts die je weg wilt. De verwijder-knop hieronder werkt op exact wat zichtbaar is.</p>'
 			);
 			applyFilter();
+			renderDeleteControl();
 		})
 		.fail(function(){ $('#mcm-nep-loading').hide(); $('#mcm-nep-results').html('<p style="color:#9d2d2d;">Serverfout bij scannen.</p>'); });
 	});
@@ -533,6 +743,26 @@ class MCM_Nepaccount_Scanner {
 		var $l = $('#mcm-nep-legend');
 		$l.toggle();
 		$(this).html(($l.is(':visible')?'&#9662; ':'&#9656; ')+'Wat betekenen de flags?');
+	});
+
+	// Verwijderen: bevestigingsflow.
+	$(document).on('click','#mcm-nep-del-start',function(){
+		$('#mcm-nep-del-confirm').show();
+		$('#mcm-nep-del-word').val(''); $('#mcm-nep-del-backup').prop('checked',false);
+		delGoState();
+	});
+	$(document).on('click','#mcm-nep-del-cancel',function(){
+		$('#mcm-nep-del-confirm').hide();
+	});
+	$(document).on('input','#mcm-nep-del-word',delGoState);
+	$(document).on('change','#mcm-nep-del-backup',delGoState);
+	$(document).on('click','#mcm-nep-del-go',function(){
+		var ids=visibleIds();
+		if(!ids.length){ return; }
+		if($('#mcm-nep-del-word').val()!=='VERWIJDER' || !$('#mcm-nep-del-backup').is(':checked')){ return; }
+		$('#mcm-nep-del-go,#mcm-nep-del-cancel,#mcm-nep-del-start').prop('disabled',true);
+		$('#mcm-nep-del-word,#mcm-nep-del-backup').prop('disabled',true);
+		doDelete(ids);
 	});
 })(jQuery);
 JS;

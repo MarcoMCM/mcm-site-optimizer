@@ -1,5 +1,16 @@
 MCM Site Optimizer — Changelog
 
+= 1.4.2 (2026-05-29) =
+* Nieuw: Module "Nep-/botaccounts" — FASE 2: verwijderen van de getoonde selectie,
+  met dubbele bevestiging (typ "VERWIJDER" + back-up-vinkje). Werkt op exact de
+  gefilterde lijst die zichtbaar is, in batches van 100 met voortgang.
+* Hard veiligheidsslot (controleert server-side, los van de UI): verwijdert ALLEEN
+  een account met uitsluitend de rol customer, zonder order (HPOS + legacy) en zonder
+  posts/comments. Beschermt ID <= 1, de huidige gebruiker en super admins. Alles wat
+  afvalt wordt overgeslagen mét reden.
+* Vóór verwijderen wordt automatisch een CSV-back-up van de te verwijderen accounts
+  weggeschreven in een afgeschermde uploads-map (wp-content/uploads/mcm-nepaccount-logs).
+
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert
   niets. Scant alle customer-accounts (of alleen vanaf een instelbare datum). Niets
