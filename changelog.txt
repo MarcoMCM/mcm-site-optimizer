@@ -10,6 +10,12 @@ MCM Site Optimizer — Changelog
   afvalt wordt overgeslagen mét reden.
 * Vóór verwijderen wordt automatisch een CSV-back-up van de te verwijderen accounts
   weggeschreven in een afgeschermde uploads-map (wp-content/uploads/mcm-nepaccount-logs).
+* Extra flags: 'geen-naam' (geen voor-/achternaam) en 'heeft-adres' (factuuradres
+  ingevuld). Een ingevuld factuuradres beschermt het account hard tegen verwijderen
+  (ook zonder order = waarschijnlijk een echte klant).
+* Selectie via vinkjes per rij, met "Selecteer alle zichtbare" / "Deselecteer alle"
+  en een kop-vinkje. Verwijderen werkt op exact de aangevinkte accounts.
+* Zoekveld boven de tabel (op login, e-mail of ID) om snel één account te vinden.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert

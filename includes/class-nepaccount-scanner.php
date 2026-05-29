@@ -36,7 +36,7 @@ class MCM_Nepaccount_Scanner {
 
 	/** Vaste flag-volgorde voor weergave + totalen. */
 	private static function flag_keys() {
-		return [ 'geen-aankopen', 'heeft-content', 'gmail-dot-dup', 'bulk-registratie', 'spam-tld' ];
+		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'gmail-dot-dup', 'bulk-registratie', 'spam-tld' ];
 	}
 
 	public function __construct() {
@@ -103,6 +103,63 @@ class MCM_Nepaccount_Scanner {
 		}
 		foreach ( $wpdb->get_col( "SELECT DISTINCT user_id FROM {$wpdb->comments} WHERE user_id IN ($in)" ) as $v ) {
 			$out[ (int) $v ] = true;
+		}
+		return $out;
+	}
+
+	/**
+	 * User-IDs ZONDER ingevulde naam (geen voor- én geen achternaam).
+	 *
+	 * @param array<int> $ids
+	 * @return array<int,bool>
+	 */
+	private static function users_without_name( array $ids ) {
+		global $wpdb;
+		if ( empty( $ids ) ) {
+			return [];
+		}
+		$in  = implode( ',', array_map( 'absint', $ids ) );
+		$has = [];
+		$rows = $wpdb->get_results(
+			"SELECT user_id, meta_value FROM {$wpdb->usermeta}
+			 WHERE user_id IN ($in) AND meta_key IN ('first_name','last_name')"
+		);
+		foreach ( $rows as $r ) {
+			if ( '' !== trim( (string) $r->meta_value ) ) {
+				$has[ (int) $r->user_id ] = true;
+			}
+		}
+		$out = [];
+		foreach ( $ids as $id ) {
+			$id = (int) $id;
+			if ( ! isset( $has[ $id ] ) ) {
+				$out[ $id ] = true;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * User-IDs MÉT een ingevuld factuuradres (straat, postcode of plaats).
+	 *
+	 * @param array<int> $ids
+	 * @return array<int,bool>
+	 */
+	private static function users_with_address( array $ids ) {
+		global $wpdb;
+		if ( empty( $ids ) ) {
+			return [];
+		}
+		$in  = implode( ',', array_map( 'absint', $ids ) );
+		$out = [];
+		$rows = $wpdb->get_results(
+			"SELECT user_id, meta_value FROM {$wpdb->usermeta}
+			 WHERE user_id IN ($in) AND meta_key IN ('billing_address_1','billing_postcode','billing_city')"
+		);
+		foreach ( $rows as $r ) {
+			if ( '' !== trim( (string) $r->meta_value ) ) {
+				$out[ (int) $r->user_id ] = true;
+			}
 		}
 		return $out;
 	}
@@ -192,9 +249,12 @@ class MCM_Nepaccount_Scanner {
 			return [ 'candidates' => [], 'summary' => $s ];
 		}
 
-		// Harde feiten: order-bezitters (globaal) + content-bezitters (van deze set).
-		$order_uids   = self::users_with_orders();
-		$content_uids = self::users_with_content( wp_list_pluck( $rows, 'ID' ) );
+		// Harde feiten.
+		$ids_all      = wp_list_pluck( $rows, 'ID' );
+		$order_uids   = self::users_with_orders();           // globaal
+		$content_uids = self::users_with_content( $ids_all ); // posts/comments
+		$noname_uids  = self::users_without_name( $ids_all ); // geen naam
+		$addr_uids    = self::users_with_address( $ids_all ); // factuuradres
 
 		// Heuristiek-voorwerk: tel genormaliseerde e-mails en registratie-uren.
 		$norm_count = [];
@@ -221,9 +281,17 @@ class MCM_Nepaccount_Scanner {
 				$flags[] = 'geen-aankopen';
 				$flag_totals['geen-aankopen']++;
 			}
+			if ( isset( $noname_uids[ $id ] ) ) {
+				$flags[] = 'geen-naam';
+				$flag_totals['geen-naam']++;
+			}
 			if ( isset( $content_uids[ $id ] ) ) {
 				$flags[] = 'heeft-content';
 				$flag_totals['heeft-content']++;
+			}
+			if ( isset( $addr_uids[ $id ] ) ) {
+				$flags[] = 'heeft-adres';
+				$flag_totals['heeft-adres']++;
 			}
 
 			// Zachte heuristieken.
@@ -360,6 +428,7 @@ class MCM_Nepaccount_Scanner {
 
 		$order_uids   = self::users_with_orders();
 		$content_uids = self::users_with_content( $ids );
+		$addr_uids    = self::users_with_address( $ids );
 		$current      = get_current_user_id();
 
 		$to_delete = [];
@@ -393,6 +462,10 @@ class MCM_Nepaccount_Scanner {
 			}
 			if ( isset( $content_uids[ $id ] ) ) {
 				$skipped[] = [ 'id' => $id, 'reason' => 'heeft posts/comments' ];
+				continue;
+			}
+			if ( isset( $addr_uids[ $id ] ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'heeft een factuuradres' ];
 				continue;
 			}
 			$to_delete[] = $id;
@@ -520,7 +593,9 @@ class MCM_Nepaccount_Scanner {
 (function($){
 	var FLAGS = [
 		{key:'geen-aankopen',    label:'Geen aankopen',    color:'#9d2d2d', desc:'Heeft nooit een WooCommerce-order geplaatst (HPOS en legacy gecontroleerd).'},
+		{key:'geen-naam',        label:'Geen naam',        color:'#9d2d2d', desc:'Geen voor- en achternaam ingevuld — wie echt wil kopen vult dit meestal wel in.'},
 		{key:'heeft-content',    label:'Heeft content',    color:'#3c6e47', desc:'Heeft posts of comments — bijvoorbeeld een productreview. Dit is een echte gebruiker; meestal NIET verwijderen.'},
+		{key:'heeft-adres',      label:'Heeft adres',      color:'#3c6e47', desc:'Heeft een factuuradres ingevuld — vrijwel zeker een echte (intentionele) klant; wordt NIET verwijderd.'},
 		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
 		{key:'bulk-registratie', label:'Bulk-registratie', color:'#824131', desc:'10 of meer accounts in hetzelfde uur aangemaakt — mogelijk een bot-golf of een import.'},
 		{key:'spam-tld',         label:'Spam-TLD',         color:'#9d2d2d', desc:'E-mail op een verdacht top-level domein (.ru, .cn, .tk, .xyz, ...).'}
@@ -554,6 +629,7 @@ class MCM_Nepaccount_Scanner {
 		var html = '<div style="background:#fff;border:1px solid #e4e6e8;border-radius:6px;padding:10px 12px;margin:6px 0 10px;">'
 			+'<strong style="font-size:12px;">Filter op flags</strong> '
 			+'<span style="font-size:11px;color:#646970;">(klik: alle &rarr; moet wél &rarr; moet níét &middot; hover voor uitleg)</span><br>';
+		html += '<div style="margin:8px 0;"><input type="search" id="mcm-nep-search" placeholder="Zoek op login, e-mail of ID..." style="width:300px;max-width:100%;padding:3px 8px;" /></div>';
 		FLAGS.forEach(function(f){
 			var s = filterState[f.key], cnt = totals[f.key]||0;
 			html += '<button type="button" class="mcm-nep-fbtn" data-flag="'+f.key+'" data-count="'+cnt+'" '
@@ -578,6 +654,7 @@ class MCM_Nepaccount_Scanner {
 			if(filterState[f.key]===1){ req.push(f.key); }
 			else if(filterState[f.key]===2){ exc.push(f.key); }
 		});
+		var term = ($('#mcm-nep-search').val()||'').toLowerCase().trim();
 		var shown=0, total=0;
 		$('#mcm-nep-results tbody tr').each(function(){
 			total++;
@@ -585,6 +662,7 @@ class MCM_Nepaccount_Scanner {
 			var flags = raw.length ? raw.split(' ') : [];
 			var ok = req.every(function(f){ return flags.indexOf(f)>=0; })
 				&& exc.every(function(f){ return flags.indexOf(f)<0; });
+			if(ok && term){ ok = (($(this).attr('data-search')||'').indexOf(term) >= 0); }
 			this.style.display = ok ? '' : 'none';
 			if(ok){ shown++; }
 		});
@@ -592,25 +670,30 @@ class MCM_Nepaccount_Scanner {
 		updateDeleteCount();
 	}
 
-	function visibleIds(){
+	function checkedIds(){
 		var ids=[];
-		$('#mcm-nep-results tbody tr:visible').each(function(){
-			var v=$(this).attr('data-id');
-			if(v){ ids.push(parseInt(v,10)); }
+		$('#mcm-nep-results tbody tr').each(function(){
+			if($(this).find('.mcm-nep-cb').is(':checked')){
+				var v=$(this).attr('data-id');
+				if(v){ ids.push(parseInt(v,10)); }
+			}
 		});
 		return ids;
 	}
 
 	function updateDeleteCount(){
-		var n = $('#mcm-nep-results tbody tr:visible').length;
+		var n = $('#mcm-nep-results tbody tr .mcm-nep-cb:checked').length;
 		$('#mcm-nep-del-count').text(n);
 		$('#mcm-nep-del-start').prop('disabled', n===0);
 	}
 
 	function renderDeleteControl(){
 		var html = '<div style="border:1px solid #f0c0c0;background:#fff6f6;border-radius:6px;padding:12px 14px;">'
+			+'<p style="margin:0 0 8px;font-size:12px;color:#646970;">Vink de accounts aan die je wilt verwijderen. Tip: filter/zoek eerst, gebruik dan "Selecteer alle zichtbare".</p>'
+			+'<button type="button" id="mcm-nep-sel-all" class="button button-small">Selecteer alle zichtbare</button> '
+			+'<button type="button" id="mcm-nep-desel-all" class="button button-small">Deselecteer alle</button><br><br>'
 			+'<button type="button" id="mcm-nep-del-start" class="button" style="background:#9d2d2d;border-color:#7d2222;color:#fff;">'
-			+'Verwijder de getoonde selectie (<span id="mcm-nep-del-count">0</span>)</button>'
+			+'Verwijder de aangevinkte accounts (<span id="mcm-nep-del-count">0</span>)</button>'
 			+'<div id="mcm-nep-del-confirm" style="display:none;margin-top:10px;">'
 			+'<p style="margin:.4em 0;color:#9d2d2d;"><strong>Let op: verwijderen is onomkeerbaar.</strong> Alleen accounts met uitsluitend de rol customer, zónder order en zónder posts/comments worden verwijderd; de rest wordt automatisch overgeslagen. Er wordt vóór verwijderen een CSV-back-up op de server weggeschreven.</p>'
 			+'<label style="display:block;margin:.4em 0;"><input type="checkbox" id="mcm-nep-del-backup"/> Ik heb een database-backup gemaakt.</label>'
@@ -704,12 +787,15 @@ class MCM_Nepaccount_Scanner {
 			var rows = '';
 			c.forEach(function(x){
 				var fl = (x.flags||[]).map(badge).join('') || '<span style="color:#999;font-size:11px;">&mdash;</span>';
-				rows += '<tr data-id="'+x.id+'" data-flags="'+(x.flags||[]).join(' ')+'">'
+				var srch = (x.id+' '+(x.login||'')+' '+(x.email||'')).toLowerCase().replace(/"/g,'');
+				rows += '<tr data-id="'+x.id+'" data-flags="'+(x.flags||[]).join(' ')+'" data-search="'+srch+'">'
+					+'<td style="text-align:center;"><input type="checkbox" class="mcm-nep-cb" /></td>'
 					+'<td>'+x.id+'</td><td>'+esc(x.login)+'</td><td>'+esc(x.email)+'</td>'
 					+'<td>'+esc(x.registered)+'</td><td>'+fl+'</td></tr>';
 			});
 			$('#mcm-nep-results').html(
 				'<table class="widefat striped" style="margin-top:4px;"><thead><tr>'
+				+'<th style="width:28px;text-align:center;"><input type="checkbox" id="mcm-nep-cb-all" title="Alle zichtbare aan/uit" /></th>'
 				+'<th>ID</th><th>Login</th><th>E-mail</th><th>Geregistreerd</th><th>Flags</th>'
 				+'</tr></thead><tbody>'+rows+'</tbody></table>'
 				+'<p class="description" style="margin-top:8px;">Filter de lijst tot precies de accounts die je weg wilt. De verwijder-knop hieronder werkt op exact wat zichtbaar is.</p>'
@@ -757,13 +843,31 @@ class MCM_Nepaccount_Scanner {
 	$(document).on('input','#mcm-nep-del-word',delGoState);
 	$(document).on('change','#mcm-nep-del-backup',delGoState);
 	$(document).on('click','#mcm-nep-del-go',function(){
-		var ids=visibleIds();
+		var ids=checkedIds();
 		if(!ids.length){ return; }
 		if($('#mcm-nep-del-word').val()!=='VERWIJDER' || !$('#mcm-nep-del-backup').is(':checked')){ return; }
 		$('#mcm-nep-del-go,#mcm-nep-del-cancel,#mcm-nep-del-start').prop('disabled',true);
 		$('#mcm-nep-del-word,#mcm-nep-del-backup').prop('disabled',true);
 		doDelete(ids);
 	});
+
+	// Aanvinken / selecteren.
+	$(document).on('change','.mcm-nep-cb', updateDeleteCount);
+	$(document).on('change','#mcm-nep-cb-all', function(){
+		var c=this.checked;
+		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb').prop('checked', c);
+		updateDeleteCount();
+	});
+	$(document).on('click','#mcm-nep-sel-all', function(){
+		$('#mcm-nep-results tbody tr:visible').find('.mcm-nep-cb').prop('checked', true);
+		updateDeleteCount();
+	});
+	$(document).on('click','#mcm-nep-desel-all', function(){
+		$('#mcm-nep-results .mcm-nep-cb').prop('checked', false);
+		$('#mcm-nep-cb-all').prop('checked', false);
+		updateDeleteCount();
+	});
+	$(document).on('input','#mcm-nep-search', applyFilter);
 })(jQuery);
 JS;
 	}
