@@ -85,6 +85,40 @@ class MCM_Nepaccount_Scanner {
 	}
 
 	/**
+	 * Alle billing-e-mailadressen die op een order voorkomen (HPOS + legacy),
+	 * lowercase. Hiermee vangen we GAST-aankopen: iemand met een account die als
+	 * gast kocht (order niet aan account-ID gekoppeld), maar wel hetzelfde e-mail.
+	 *
+	 * @return array<string,bool> map lowercased email => true
+	 */
+	private static function order_billing_emails() {
+		global $wpdb;
+		$out = [];
+
+		// Legacy postmeta.
+		foreach ( $wpdb->get_col(
+			"SELECT DISTINCT pm.meta_value
+			 FROM {$wpdb->postmeta} pm
+			 JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+			 WHERE pm.meta_key = '_billing_email'
+			   AND pm.meta_value <> ''
+			   AND p.post_type IN ('shop_order','shop_order_refund')"
+		) as $e ) {
+			$out[ strtolower( trim( $e ) ) ] = true;
+		}
+
+		// HPOS — wc_orders heeft een billing_email-kolom.
+		$hpos = $wpdb->prefix . 'wc_orders';
+		if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $hpos ) ) === $hpos ) {
+			foreach ( $wpdb->get_col( "SELECT DISTINCT billing_email FROM {$hpos} WHERE billing_email <> ''" ) as $e ) {
+				$out[ strtolower( trim( $e ) ) ] = true;
+			}
+		}
+
+		return $out;
+	}
+
+	/**
 	 * User-IDs die posts of comments bezitten (= echte activiteit).
 	 *
 	 * @param array<int> $ids kandidaat-IDs om te checken.
@@ -313,7 +347,8 @@ class MCM_Nepaccount_Scanner {
 
 		// Harde feiten.
 		$ids_all      = wp_list_pluck( $rows, 'ID' );
-		$order_uids   = self::users_with_orders();           // globaal
+		$order_uids   = self::users_with_orders();           // globaal (gekoppeld)
+		$order_emails = self::order_billing_emails();        // gast-aankopen op e-mail
 		$content_uids = self::users_with_content( $ids_all ); // posts/comments
 		$noname_uids  = self::users_without_name( $ids_all );   // geen naam
 		$addr_uids    = self::users_with_address( $ids_all );   // factuuradres
@@ -339,8 +374,9 @@ class MCM_Nepaccount_Scanner {
 			$id    = (int) $r->ID;
 			$flags = [];
 
-			// Harde feiten.
-			if ( ! isset( $order_uids[ $id ] ) ) {
+			// Harde feiten. Order telt via gekoppeld account OF via billing-e-mail (gast).
+			$has_order = isset( $order_uids[ $id ] ) || isset( $order_emails[ strtolower( trim( $r->user_email ) ) ] );
+			if ( ! $has_order ) {
 				$flags[] = 'geen-aankopen';
 				$flag_totals['geen-aankopen']++;
 			}
@@ -498,6 +534,7 @@ class MCM_Nepaccount_Scanner {
 		}
 
 		$order_uids   = self::users_with_orders();
+		$order_emails = self::order_billing_emails();
 		$content_uids = self::users_with_content( $ids );
 		$addr_uids    = self::users_with_address( $ids );
 		$current      = get_current_user_id();
@@ -529,6 +566,10 @@ class MCM_Nepaccount_Scanner {
 			}
 			if ( isset( $order_uids[ $id ] ) ) {
 				$skipped[] = [ 'id' => $id, 'reason' => 'heeft een order' ];
+				continue;
+			}
+			if ( isset( $order_emails[ strtolower( trim( $u->user_email ) ) ] ) ) {
+				$skipped[] = [ 'id' => $id, 'reason' => 'heeft order op zelfde e-mail (gast)' ];
 				continue;
 			}
 			if ( isset( $content_uids[ $id ] ) ) {

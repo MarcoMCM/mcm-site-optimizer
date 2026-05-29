@@ -33,6 +33,10 @@ MCM Site Optimizer — Changelog
   selectie wordt gewist zodra je het filter/zoekopdracht wijzigt. Voorheen telden
   aanvinkjes uit andere (verborgen) filters mee, waardoor je per ongeluk veel meer kon
   verwijderen dan de huidige weergave toonde.
+* Veiligheid: een order telt nu ook mee als hij op hetzelfde billing-e-mailadres staat,
+  niet alleen via het gekoppelde account. Vangt GAST-aankopen (gast-checkout staat aan)
+  van mensen die wel een account hebben maar als gast bestelden — die golden onterecht
+  als 'geen-aankopen' en zijn nu beschermd tegen verwijderen.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert
