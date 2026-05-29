@@ -16,6 +16,11 @@ MCM Site Optimizer — Changelog
 * Selectie via vinkjes per rij, met "Selecteer alle zichtbare" / "Deselecteer alle"
   en een kop-vinkje. Verwijderen werkt op exact de aangevinkte accounts.
 * Zoekveld boven de tabel (op login, e-mail of ID) om snel één account te vinden.
+* Fix: 'heeft-content' telde per ongeluk shop_order-records mee (WooCommerce zet de
+  klant als auteur), waardoor kopers dubbel als "content" verschenen. Nu alleen echte
+  content: auteur van post/pagina + reviews (comments).
+* Nieuw: flag 'heeft-contactformulier' (Flamingo-inzending) — alleen ter info/filtering,
+  beschermt NIET automatisch tegen verwijderen.
 
 = 1.4.1 (2026-05-28) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 1, alleen detecteren en preview, verwijdert

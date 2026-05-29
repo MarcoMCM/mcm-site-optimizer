@@ -36,7 +36,7 @@ class MCM_Nepaccount_Scanner {
 
 	/** Vaste flag-volgorde voor weergave + totalen. */
 	private static function flag_keys() {
-		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'gmail-dot-dup', 'bulk-registratie', 'spam-tld' ];
+		return [ 'geen-aankopen', 'geen-naam', 'heeft-content', 'heeft-adres', 'heeft-contactformulier', 'gmail-dot-dup', 'bulk-registratie', 'spam-tld' ];
 	}
 
 	public function __construct() {
@@ -98,10 +98,32 @@ class MCM_Nepaccount_Scanner {
 		$in  = implode( ',', array_map( 'absint', $ids ) );
 		$out = [];
 
-		foreach ( $wpdb->get_col( "SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE post_author IN ($in)" ) as $v ) {
+		// Alleen ECHT geschreven content. NIET shop_order (WooCommerce zet daar de klant
+		// als auteur op) en niet flamingo_contact/bijlagen e.d.
+		foreach ( $wpdb->get_col( "SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE post_author IN ($in) AND post_type IN ('post','page')" ) as $v ) {
 			$out[ (int) $v ] = true;
 		}
 		foreach ( $wpdb->get_col( "SELECT DISTINCT user_id FROM {$wpdb->comments} WHERE user_id IN ($in)" ) as $v ) {
+			$out[ (int) $v ] = true;
+		}
+		return $out;
+	}
+
+	/**
+	 * User-IDs die een contactformulier insturen (Flamingo). Eigen flag, geen
+	 * verwijder-bescherming — alleen ter info/filtering.
+	 *
+	 * @param array<int> $ids
+	 * @return array<int,bool>
+	 */
+	private static function users_with_contactform( array $ids ) {
+		global $wpdb;
+		if ( empty( $ids ) ) {
+			return [];
+		}
+		$in  = implode( ',', array_map( 'absint', $ids ) );
+		$out = [];
+		foreach ( $wpdb->get_col( "SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE post_author IN ($in) AND post_type IN ('flamingo_contact','flamingo_inbound')" ) as $v ) {
 			$out[ (int) $v ] = true;
 		}
 		return $out;
@@ -253,8 +275,9 @@ class MCM_Nepaccount_Scanner {
 		$ids_all      = wp_list_pluck( $rows, 'ID' );
 		$order_uids   = self::users_with_orders();           // globaal
 		$content_uids = self::users_with_content( $ids_all ); // posts/comments
-		$noname_uids  = self::users_without_name( $ids_all ); // geen naam
-		$addr_uids    = self::users_with_address( $ids_all ); // factuuradres
+		$noname_uids  = self::users_without_name( $ids_all );   // geen naam
+		$addr_uids    = self::users_with_address( $ids_all );   // factuuradres
+		$contact_uids = self::users_with_contactform( $ids_all ); // contactformulier
 
 		// Heuristiek-voorwerk: tel genormaliseerde e-mails en registratie-uren.
 		$norm_count = [];
@@ -292,6 +315,10 @@ class MCM_Nepaccount_Scanner {
 			if ( isset( $addr_uids[ $id ] ) ) {
 				$flags[] = 'heeft-adres';
 				$flag_totals['heeft-adres']++;
+			}
+			if ( isset( $contact_uids[ $id ] ) ) {
+				$flags[] = 'heeft-contactformulier';
+				$flag_totals['heeft-contactformulier']++;
 			}
 
 			// Zachte heuristieken.
@@ -596,6 +623,7 @@ class MCM_Nepaccount_Scanner {
 		{key:'geen-naam',        label:'Geen naam',        color:'#9d2d2d', desc:'Geen voor- en achternaam ingevuld — wie echt wil kopen vult dit meestal wel in.'},
 		{key:'heeft-content',    label:'Heeft content',    color:'#3c6e47', desc:'Heeft posts of comments — bijvoorbeeld een productreview. Dit is een echte gebruiker; meestal NIET verwijderen.'},
 		{key:'heeft-adres',      label:'Heeft adres',      color:'#3c6e47', desc:'Heeft een factuuradres ingevuld — vrijwel zeker een echte (intentionele) klant; wordt NIET verwijderd.'},
+		{key:'heeft-contactformulier', label:'Contactformulier', color:'#5b7a9d', desc:'Heeft een contactformulier ingestuurd (Flamingo) — teken van een echt mens, maar beschermt NIET automatisch tegen verwijderen.'},
 		{key:'gmail-dot-dup',    label:'Gmail dot-dup',    color:'#b95e41', desc:'Gmail dot/plus-truc: marco+1@gmail.com en ma.rco@gmail.com wijzen naar dezelfde inbox als een ander account.'},
 		{key:'bulk-registratie', label:'Bulk-registratie', color:'#824131', desc:'10 of meer accounts in hetzelfde uur aangemaakt — mogelijk een bot-golf of een import.'},
 		{key:'spam-tld',         label:'Spam-TLD',         color:'#9d2d2d', desc:'E-mail op een verdacht top-level domein (.ru, .cn, .tk, .xyz, ...).'}
