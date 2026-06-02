@@ -498,6 +498,13 @@ class MCM_Nepaccount_Scanner {
 			wp_send_json_error( 'Geen toegang.' );
 		}
 
+		// Op grote shops piekt de scan rond 240 MB (4k+ customers x meta-queries).
+		// Standaard PHP-FPM memory_limit (vaak 128/256M) levert dan een fatal op
+		// en de UI toont "Serverfout bij scannen". Raise memory voor admin-context;
+		// set_time_limit voorkomt timeouts bij toekomstige groei.
+		wp_raise_memory_limit( 'admin' );
+		@set_time_limit( 120 );
+
 		$scope  = isset( $_POST['scope'] ) ? sanitize_key( wp_unslash( $_POST['scope'] ) ) : 'all';
 		$cutoff = '';
 		if ( 'date' === $scope ) {
@@ -540,6 +547,12 @@ class MCM_Nepaccount_Scanner {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( 'Geen toegang.' );
 		}
+
+		// Verwijder-flow herhaalt dezelfde zware veiligheidscheck als scan()
+		// (orders, content, adressen) — geef dezelfde headroom.
+		wp_raise_memory_limit( 'admin' );
+		@set_time_limit( 120 );
+
 		$ids = isset( $_POST['ids'] ) ? (array) wp_unslash( $_POST['ids'] ) : [];
 		$ids = array_map( 'absint', $ids );
 
