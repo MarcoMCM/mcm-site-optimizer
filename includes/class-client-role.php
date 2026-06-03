@@ -404,7 +404,9 @@ class MCM_Optimizer_Client_Role {
 		$user        = wp_get_current_user();
 		$first_name  = $user->first_name ? $user->first_name : $user->display_name;
 		$site_name   = get_bloginfo( 'name' );
-		$handleiding = home_url( '/handleiding/' );
+		// Centrale handleiding op mcmwebsites.nl — werkt op elke klantsite,
+		// hoeft niet per klant een /handleiding/ pagina te bestaan.
+		$handleiding = 'https://mcmwebsites.nl/kennisbank/nieuwe-paginas-en-berichten-aanmaken/';
 		$mail        = 'marco@mcmwebsites.nl';
 		$tel         = '06-28428785';
 		$tel_link    = '+31628428785';
