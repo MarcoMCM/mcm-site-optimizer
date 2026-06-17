@@ -30,6 +30,23 @@ class MCM_Optimizer_Client_Role {
 	const ROLE_NAME = 'MCM Klant';
 
 	/**
+	 * Plus-variant: identiek aan MCM Klant maar MÉT menu-beheer
+	 * (capability edit_theme_options). Opt-in per klant; de standaard
+	 * mcm_klant blijft dichtgetimmerd. Bedoeld voor klanten die na
+	 * oplevering hun eigen menu mogen beheren.
+	 */
+	const ROLE_SLUG_PLUS = 'mcm_klant_plus';
+	const ROLE_NAME_PLUS = 'MCM Klant +';
+
+	/**
+	 * Versie van de rol-definities. Bump dit nummer als de capabilities
+	 * wijzigen, zodat bestaande sites de rollen automatisch herinstalleren
+	 * na een plugin-update (de activatie-hook draait NIET bij updates via
+	 * de plugin-update-checker / GitHub releases / MainWP).
+	 */
+	const ROLES_VERSION = '2';
+
+	/**
 	 * Init: registreer alle hooks direct.
 	 *
 	 * BELANGRIJK: admin_menu fires VÓÓR admin_init in WordPress. We mogen
@@ -53,6 +70,14 @@ class MCM_Optimizer_Client_Role {
 		add_action( 'admin_notices',              [ __CLASS__, 'editor_conversion_notice' ] );
 		add_action( 'wp_ajax_mcm_convert_editors',       [ __CLASS__, 'ajax_convert_editors' ] );
 		add_action( 'wp_ajax_mcm_dismiss_editor_notice', [ __CLASS__, 'ajax_dismiss_notice' ] );
+
+		// Herinstalleer rollen automatisch na een plugin-update (PUC draait
+		// geen activatie-hook).
+		add_action( 'admin_init', [ __CLASS__, 'maybe_upgrade_roles' ] );
+
+		// Plus-klant: edit_theme_options opent ook Customizer/Widgets/Thema's —
+		// die schermen blokkeren zodat alleen Weergave → Menu's overblijft.
+		add_action( 'admin_init', [ __CLASS__, 'block_theme_screens' ] );
 
 	}
 
@@ -91,7 +116,20 @@ class MCM_Optimizer_Client_Role {
 		if ( ! $user || ! $user->exists() ) {
 			return false;
 		}
-		return in_array( self::ROLE_SLUG, (array) $user->roles, true );
+		$roles = (array) $user->roles;
+		return in_array( self::ROLE_SLUG, $roles, true )
+			|| in_array( self::ROLE_SLUG_PLUS, $roles, true );
+	}
+
+	/**
+	 * Heeft de huidige user de MCM Klant + rol (klant MÉT menu-beheer)?
+	 */
+	public static function current_user_is_plus() {
+		$user = wp_get_current_user();
+		if ( ! $user || ! $user->exists() ) {
+			return false;
+		}
+		return in_array( self::ROLE_SLUG_PLUS, (array) $user->roles, true );
 	}
 
 	/* =======================================================================
@@ -245,11 +283,33 @@ class MCM_Optimizer_Client_Role {
 		];
 		$caps = array_merge( $caps, $add );
 
-		// Verwijder eerst eventuele oude versie en herinstalleer schoon.
+		// Standaard klant: dichtgetimmerd, GEEN menu-beheer.
 		remove_role( self::ROLE_SLUG );
 		add_role( self::ROLE_SLUG, self::ROLE_NAME, $caps );
 
+		// Plus-klant: identiek + menu-beheer via edit_theme_options. Die cap
+		// opent in WP óók Customizer/Widgets/Thema's; die schermen blokkeren
+		// we hard in block_theme_screens(), zodat enkel Weergave → Menu's
+		// bereikbaar blijft.
+		$plus_caps = array_merge( $caps, [ 'edit_theme_options' => true ] );
+		remove_role( self::ROLE_SLUG_PLUS );
+		add_role( self::ROLE_SLUG_PLUS, self::ROLE_NAME_PLUS, $plus_caps );
+
 		return true;
+	}
+
+	/**
+	 * Herinstalleer de rollen automatisch wanneer ROLES_VERSION wijzigt.
+	 * Nodig omdat de activatie-hook niet draait bij updates via de
+	 * plugin-update-checker (GitHub releases / MainWP). Draait hooguit één
+	 * keer per versie; install_role() is idempotent.
+	 */
+	public static function maybe_upgrade_roles() {
+		if ( get_option( 'mcm_roles_version' ) === self::ROLES_VERSION ) {
+			return;
+		}
+		self::install_role();
+		update_option( 'mcm_roles_version', self::ROLES_VERSION );
 	}
 
 	/**
@@ -280,12 +340,13 @@ class MCM_Optimizer_Client_Role {
 
 		global $menu, $submenu;
 
+		$is_plus = self::current_user_is_plus();
+
 		// 1. TOP-LEVEL menus die volledig weg moeten.
 		$remove_top = [
 			// WP core.
 			'edit-comments.php',   // Reacties.
 			'tools.php',           // Gereedschap.
-			'themes.php',          // Weergave.
 			'plugins.php',         // Plugins.
 			'users.php',           // Gebruikers.
 			'options-general.php', // Instellingen.
@@ -301,6 +362,14 @@ class MCM_Optimizer_Client_Role {
 			'wpseo_dashboard', // Yoast SEO — mocht het ooit actief zijn.
 			'rank-math',       // Rank Math.
 		];
+
+		// 'Weergave' (themes.php) gaat volledig weg voor de standaard klant.
+		// Voor de plus-klant blijft 'm staan; verderop strippen we alle
+		// submenu's behalve 'Menu's' (+ block_theme_screens() als slot op de deur).
+		if ( ! $is_plus ) {
+			$remove_top[] = 'themes.php';
+		}
+
 		foreach ( $remove_top as $slug ) {
 			remove_menu_page( $slug );
 		}
@@ -349,6 +418,41 @@ class MCM_Optimizer_Client_Role {
 					}
 				}
 			}
+		}
+
+		// 4. PLUS-KLANT: onder 'Weergave' alleen 'Menu's' laten staan
+		//    (Thema's / Customizer / Widgets / Thema-editor eruit).
+		if ( $is_plus && isset( $submenu['themes.php'] ) && is_array( $submenu['themes.php'] ) ) {
+			foreach ( $submenu['themes.php'] as $key => $item ) {
+				if ( isset( $item[2] ) && 'nav-menus.php' !== $item[2] ) {
+					unset( $submenu['themes.php'][ $key ] );
+				}
+			}
+		}
+	}
+
+	/**
+	 * Plus-klant heeft edit_theme_options (nodig voor Menu's), maar die cap
+	 * opent in WordPress ook Thema's / Customizer / Widgets / Thema-editor.
+	 * Die schermen blokkeren we hard op URL-niveau en sturen terug naar Menu's,
+	 * zodat alleen Weergave → Menu's overblijft. De standaard mcm_klant heeft
+	 * de cap niet en komt hier sowieso niet (return bij niet-plus).
+	 */
+	public static function block_theme_screens() {
+		if ( ! self::current_user_is_plus() ) {
+			return;
+		}
+		global $pagenow;
+		$blocked = [
+			'themes.php',        // Thema-overzicht.
+			'customize.php',     // Customizer.
+			'widgets.php',       // Widgets.
+			'theme-editor.php',  // Thema-bestandseditor.
+			'theme-install.php', // Thema's installeren.
+		];
+		if ( in_array( $pagenow, $blocked, true ) ) {
+			wp_safe_redirect( admin_url( 'nav-menus.php' ) );
+			exit;
 		}
 	}
 
@@ -407,6 +511,9 @@ class MCM_Optimizer_Client_Role {
 		// Centrale handleiding op mcmwebsites.nl — werkt op elke klantsite,
 		// hoeft niet per klant een /handleiding/ pagina te bestaan.
 		$handleiding = 'https://mcmwebsites.nl/kennisbank/nieuwe-paginas-en-berichten-aanmaken/';
+		// Menu-uitleg: alleen relevant (en getoond) voor de plus-klant, die zelf
+		// het menu mag beheren.
+		$menu_uitleg = 'https://mcmwebsites.nl/kennisbank/menu-aanpassen-in-wordpress/';
 		$mail        = 'marco@mcmwebsites.nl';
 		$tel         = '06-28428785';
 		$tel_link    = '+31628428785';
@@ -599,6 +706,13 @@ class MCM_Optimizer_Client_Role {
 						<strong>Handleiding</strong>
 						<span class="mcm-tile-sub">Stap-voor-stap uitleg</span>
 					</a>
+					<?php if ( self::current_user_is_plus() ) : ?>
+					<a href="<?php echo esc_url( $menu_uitleg ); ?>" target="_blank" rel="noopener" class="mcm-tile">
+						<span class="dashicons dashicons-menu"></span>
+						<strong>Menu aanpassen</strong>
+						<span class="mcm-tile-sub">Zet een pagina in je menu</span>
+					</a>
+					<?php endif; ?>
 				</div>
 
 				<div class="mcm-tip">

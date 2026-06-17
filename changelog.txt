@@ -1,5 +1,20 @@
 MCM Site Optimizer — Changelog
 
+= 1.5.0 (2026-06-17) =
+* Nieuw: rol "MCM Klant +" (mcm_klant_plus) — identiek aan MCM Klant, maar MÉT
+  menu-beheer. Opt-in per klant: de standaard mcm_klant blijft volledig
+  dichtgetimmerd. Bedoeld om een klant ná oplevering zelf zijn menu te laten
+  beheren, terwijl je tijdens de bouw verantwoordelijk blijft.
+* WordPress koppelt menu-beheer aan capability edit_theme_options, die óók
+  Customizer/Widgets/Thema's/Thema-editor opent. Die schermen worden voor de
+  plus-rol hard geblokkeerd (URL-redirect naar Weergave → Menu's) en uit het
+  Weergave-submenu gestript, zodat alleen Menu's overblijft.
+* Rollen herinstalleren nu automatisch na een plugin-update (ROLES_VERSION +
+  mcm_roles_version optie), omdat de activatie-hook niet draait bij updates via
+  de plugin-update-checker / MainWP.
+* Welkomst-widget: extra tegel "Menu aanpassen" met link naar de menu-handleiding,
+  alleen zichtbaar voor de MCM Klant +-rol (die zelf het menu mag beheren).
+
 = 1.4.2 (2026-05-29) =
 * Nieuw: Module "Nep-/botaccounts" — FASE 2: verwijderen van de getoonde selectie,
   met dubbele bevestiging (typ "VERWIJDER" + back-up-vinkje). Werkt op exact de

@@ -3,7 +3,7 @@
  * Plugin Name: MCM Site Optimizer
  * Plugin URI:  https://github.com/MarcoMCM/mcm-site-optimizer
  * Description: Site optimalisatie tool voor MCM Websites klanten. Database opschoning, ongebruikte media detectie, image sizes beheer en meer.
- * Version: 1.4.3
+ * Version: 1.5.0
  * Author: MCM Websites
  * Author URI: https://mcmwebsites.nl
  * Update URI: https://github.com/MarcoMCM/mcm-site-optimizer
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MCM_OPTIMIZER_VERSION', '1.4.3' );
+define( 'MCM_OPTIMIZER_VERSION', '1.5.0' );
 define( 'MCM_OPTIMIZER_FILE', __FILE__ );
 define( 'MCM_OPTIMIZER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MCM_OPTIMIZER_URL', plugin_dir_url( __FILE__ ) );
@@ -83,6 +83,7 @@ final class MCM_Site_Optimizer {
 		// Installeer / werk de MCM Klant rol bij.
 		if ( class_exists( 'MCM_Optimizer_Client_Role' ) ) {
 			MCM_Optimizer_Client_Role::install_role();
+			update_option( 'mcm_roles_version', MCM_Optimizer_Client_Role::ROLES_VERSION );
 			if ( false === get_option( 'mcm_client_role_enabled', false ) ) {
 				update_option( 'mcm_client_role_enabled', true );
 			}
