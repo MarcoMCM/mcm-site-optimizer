@@ -87,12 +87,38 @@ class MCM_Media_Scanner {
 
 		// Afbeeldingen die in post-content staan: via wp-image-ID, via
 		// shortcode-ID's, en via /uploads/-URL's (op bestandsnaam gematcht).
-		$rows = $wpdb->get_col(
-			"SELECT post_content FROM {$wpdb->posts}
-			 WHERE post_content LIKE '%wp-image-%' OR post_content LIKE '%/uploads/%'"
-		);
-		foreach ( $rows as $c ) {
-			$c = (string) $c;
+		// In BATCHES lezen, en revisies overslaan. Zonder deze twee dingen
+		// haalde deze query op een Avada-site 47,6 MB aan post_content in één
+		// keer op (1.782 rijen, waarvan 1.361 revisies = 41,5 MB) en liep de
+		// scan na 25 minuten nog steeds. Zonder revisies blijft er 6,1 MB over.
+		//
+		// Let op: staat een afbeelding ALLEEN in een oude revisie, dan geldt
+		// hij nu als ongebruikt. De scanner gooit hem in de prullenbak (niet
+		// weg), dus dat is terug te draaien. Wil je revisies tóch meenemen:
+		// add_filter( 'mcm_optimizer_scan_revisions', '__return_true' );
+		$where = "( post_content LIKE '%wp-image-%' OR post_content LIKE '%/uploads/%' )";
+		if ( ! apply_filters( 'mcm_optimizer_scan_revisions', false ) ) {
+			$where .= " AND post_type NOT IN ( 'revision', 'customize_changeset', 'oembed_cache' )
+			            AND post_status NOT IN ( 'auto-draft', 'trash' )";
+		}
+
+		$batch   = max( 20, (int) apply_filters( 'mcm_optimizer_scan_batch_size', 200 ) );
+		$laatste = 0;
+
+		do {
+			$rijen = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT ID, post_content FROM {$wpdb->posts}
+					 WHERE {$where} AND ID > %d
+					 ORDER BY ID ASC LIMIT %d",
+					$laatste,
+					$batch
+				)
+			);
+
+			foreach ( $rijen as $rij ) {
+				$laatste = (int) $rij->ID;
+				$c       = (string) $rij->post_content;
 			if ( preg_match_all( '/wp-image-(\d+)/', $c, $m ) ) {
 				foreach ( $m[1] as $x ) {
 					$ids[ (int) $x ] = 1;
@@ -115,7 +141,11 @@ class MCM_Media_Scanner {
 					$files[ strtolower( $fn ) ] = 1;
 				}
 			}
-		}
+			}
+
+			$aantal = count( $rijen );
+			unset( $rijen );
+		} while ( $aantal === $batch );
 
 		return [ 'ids' => $ids, 'files' => $files ];
 	}
@@ -172,11 +202,24 @@ class MCM_Media_Scanner {
 		$ref     = self::build_reference_index();
 		$orphans = [];
 		$buckets = [];
+		$missing = [];
+
+		$upload  = wp_upload_dir();
+		$basedir = untrailingslashit( $upload['basedir'] ?? '' );
 
 		foreach ( $atts as $a ) {
 			$id   = (int) $a->ID;
 			$file = (string) $a->file;
 			$base = strtolower( basename( $file ) );
+
+			// Ontbrekend bestand: het record staat nog in de database maar het
+			// bestand is van schijf verdwenen. Dit staat LOS van "ongebruikt" —
+			// een gebruikte afbeelding kan ook een dood record zijn, en dan
+			// blijven optimalisatie-plugins er eindeloos op stuklopen. Zo liep
+			// WPvivid Imgoptim maandenlang in een lus op één zo'n record.
+			if ( '' !== $basedir && ( '' === $file || ! file_exists( $basedir . '/' . $file ) ) ) {
+				$missing[] = $id;
+			}
 
 			if ( isset( $ref['ids'][ $id ] ) || ( '' !== $base && isset( $ref['files'][ $base ] ) ) ) {
 				continue;
@@ -206,6 +249,8 @@ class MCM_Media_Scanner {
 			'orphan_ids' => $orphans,
 			'buckets'    => $buckets,
 			'sample'     => $sample,
+			'missing'    => count( $missing ),
+			'missing_ids' => array_slice( $missing, 0, 200 ),
 		];
 	}
 
@@ -424,6 +469,13 @@ jQuery(document).ready(function($) {
 			html += 'in gebruik: <strong>' + fmt(d.referenced) + '</strong> &middot; ';
 			html += 'ongebruikt: <strong style="color:var(--mcm-terracotta);">' + fmt(d.orphans) + '</strong>';
 			html += '</div>';
+
+			if (d.missing > 0) {
+				html += '<div class="mcm-opt-alert mcm-opt-alert-warn"><span class="dashicons dashicons-warning"></span> ';
+				html += '<strong>' + fmt(d.missing) + '</strong> mediarecord(s) verwijzen naar een bestand dat niet meer op schijf staat. ';
+				html += 'Dat zijn dode records: optimalisatie-plugins kunnen erop blijven hangen. Los van "ongebruikt" hierboven.';
+				html += '</div>';
+			}
 
 			if (d.orphans === 0) {
 				html += '<div class="mcm-opt-alert mcm-opt-alert-safe"><span class="dashicons dashicons-yes-alt"></span> Geen ongebruikte afbeeldingen gevonden.</div>';

@@ -78,6 +78,30 @@ class MCM_Health_Check {
 			$results['all_passed'] = false;
 		}
 
+		// 3b. Autoload-omvang. Autoloaded options worden bij ELKE pageload
+		//     ingelezen; loopt dat op, dan betaalt elke bezoeker mee.
+		$autoload = self::check_autoload();
+		$results['checks']['autoload'] = [
+			'label'  => 'Autoload-omvang',
+			'passed' => $autoload['ok'],
+			'detail' => $autoload['message'],
+		];
+		if ( ! $autoload['ok'] ) {
+			$results['all_passed'] = false;
+		}
+
+		// 3c. Cron. Een vastgelopen of dubbel ingeplande taak vreet stilletjes
+		//     capaciteit; dat zie je nergens terug behalve in de cron-array.
+		$cron = self::check_cron();
+		$results['checks']['cron'] = [
+			'label'  => 'Cron-taken',
+			'passed' => $cron['ok'],
+			'detail' => $cron['message'],
+		];
+		if ( ! $cron['ok'] ) {
+			$results['all_passed'] = false;
+		}
+
 		// 4. WooCommerce check (als beschikbaar).
 		if ( class_exists( 'WooCommerce' ) ) {
 			$woo = self::check_woocommerce();
@@ -230,6 +254,134 @@ class MCM_Health_Check {
 		return [
 			'ok'      => true,
 			'message' => 'Database OK.',
+		];
+	}
+
+	/**
+	 * Drempel voor autoloaded options. WordPress' eigen Site Health slaat rond
+	 * 800 KB alarm; wij houden 1 MB aan als "nog acceptabel".
+	 */
+	public static function max_autoload_bytes() {
+		return (int) apply_filters( 'mcm_optimizer_max_autoload_bytes', 1024 * 1024 );
+	}
+
+	/**
+	 * Autoload-omvang meten. Aanleiding: op een klantsite stond 1,58 MB aan
+	 * opties van een allang verwijderde security-plugin nog op autoload — die
+	 * werd dus bij elke pageload ingelezen zonder dat iets ze nog gebruikte.
+	 */
+	public static function check_autoload() {
+		global $wpdb;
+
+		$bytes = (int) $wpdb->get_var(
+			"SELECT SUM(LENGTH(option_value)) FROM {$wpdb->options}
+			 WHERE autoload IN ('yes','on','auto','auto-on')"
+		);
+
+		$max = self::max_autoload_bytes();
+
+		if ( $bytes > $max ) {
+			$grootste = $wpdb->get_results(
+				"SELECT option_name, LENGTH(option_value) AS len FROM {$wpdb->options}
+				 WHERE autoload IN ('yes','on','auto','auto-on')
+				 ORDER BY len DESC LIMIT 3"
+			);
+			$namen = [];
+			foreach ( (array) $grootste as $g ) {
+				$namen[] = $g->option_name . ' (' . size_format( (int) $g->len ) . ')';
+			}
+
+			return [
+				'ok'      => false,
+				'message' => sprintf(
+					'Autoload is %s (drempel %s). Grootste: %s.',
+					size_format( $bytes ),
+					size_format( $max ),
+					implode( ', ', $namen )
+				),
+			];
+		}
+
+		return [
+			'ok'      => true,
+			'message' => sprintf( 'Autoload is %s. OK.', size_format( $bytes ) ),
+		];
+	}
+
+	/**
+	 * Cron-taken controleren op drie signalen:
+	 *  1. taken die ver over tijd zijn  → cron draait niet
+	 *  2. dezelfde hook meerdere keren ingepland → dubbele planning
+	 *  3. buitensporig veel taken → opeenstapeling
+	 *
+	 * Aanleiding: een beeldoptimalisatie-plugin die maandenlang elke twee
+	 * minuten dezelfde (niet-bestaande) afbeelding "optimaliseerde".
+	 */
+	public static function check_cron() {
+		$crons = _get_cron_array();
+		if ( ! is_array( $crons ) ) {
+			return [ 'ok' => true, 'message' => 'Geen cron-array gevonden.' ];
+		}
+
+		$nu        = time();
+		$te_laat   = [];
+		$per_hook  = [];
+		$totaal    = 0;
+		$marge     = (int) apply_filters( 'mcm_optimizer_cron_late_seconds', HOUR_IN_SECONDS );
+
+		foreach ( $crons as $ts => $hooks ) {
+			if ( ! is_array( $hooks ) ) {
+				continue;
+			}
+			foreach ( $hooks as $hook => $events ) {
+				$aantal            = is_array( $events ) ? count( $events ) : 1;
+				$totaal           += $aantal;
+				$per_hook[ $hook ] = ( $per_hook[ $hook ] ?? 0 ) + $aantal;
+
+				if ( $ts < ( $nu - $marge ) ) {
+					$te_laat[ $hook ] = $nu - (int) $ts;
+				}
+			}
+		}
+
+		$problemen = [];
+
+		if ( ! empty( $te_laat ) ) {
+			arsort( $te_laat );
+			$eerste = array_key_first( $te_laat );
+			$problemen[] = sprintf(
+				'%d taak/taken over tijd, langst: %s (%s te laat)',
+				count( $te_laat ),
+				$eerste,
+				human_time_diff( $nu - $te_laat[ $eerste ], $nu )
+			);
+		}
+
+		$dubbel = array_filter( $per_hook, function ( $n ) { return $n > 1; } );
+		if ( ! empty( $dubbel ) ) {
+			arsort( $dubbel );
+			$namen = [];
+			foreach ( array_slice( $dubbel, 0, 3, true ) as $h => $n ) {
+				$namen[] = $h . ' (' . $n . 'x)';
+			}
+			$problemen[] = 'dubbel ingepland: ' . implode( ', ', $namen );
+		}
+
+		$max_taken = (int) apply_filters( 'mcm_optimizer_max_cron_events', 150 );
+		if ( $totaal > $max_taken ) {
+			$problemen[] = sprintf( '%d taken in totaal (drempel %d)', $totaal, $max_taken );
+		}
+
+		if ( ! empty( $problemen ) ) {
+			return [
+				'ok'      => false,
+				'message' => ucfirst( implode( '; ', $problemen ) ) . '.',
+			];
+		}
+
+		return [
+			'ok'      => true,
+			'message' => sprintf( '%d cron-taken, niets over tijd. OK.', $totaal ),
 		];
 	}
 

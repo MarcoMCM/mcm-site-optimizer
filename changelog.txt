@@ -1,5 +1,29 @@
 MCM Site Optimizer — Changelog
 
+= 1.7.1 (2026-09-02) =
+* Nieuw: Cache-guard (class-cache-guard.php). Leest WP Rocket's "Nooit cachen"-lijst en stuurt voor die URL's zelf no-cache-headers, zodat Varnish/reverse proxies dezelfde uitsluitingen aanhouden. Aanleiding: op stadsfondshilversum.nl cachete Varnish de Gravity Flow-inbox omdat het WP Rocket's lijst niet kent — bezoekers kregen elkaars evaluatiepagina te zien. Eén lijst onderhouden volstaat nu. Filter: mcm_optimizer_no_cache_uris. Zet header X-MCM-Cache-Guard zodat je kunt controleren dat hij vuurt.
+* Fix: Media-scanner haalde alle post_content in één query op, inclusief revisies — 47,6 MB / 1.782 rijen op een Avada-site, waarvan 1.361 revisies. De scan liep na 25 minuten nog. Nu in batches (filter mcm_optimizer_scan_batch_size, standaard 200) en zonder revisies (filter mcm_optimizer_scan_revisions om ze terug te zetten). Zelfde site: 3 seconden.
+* Let op bij die fix: staat een afbeelding alleen in een oude revisie, dan telt hij nu als ongebruikt. Hij gaat naar de prullenbak, niet weg.
+
+= 1.7.0 (2026-09-02) =
+* Nieuw: Log-monitor telt nu per logMAP op (aantal bestanden + totale omvang), niet alleen per bestand. Aanleiding: 5.885 losse logjes van ~15 KB (samen 97 MB) in wp-content/wpvividbackups/wpvivid_log/ bleven onzichtbaar omdat geen enkel bestand boven de drempel kwam — en ze heetten *.txt, niet *.log.
+* Nieuw: Health check meet de autoload-omvang en noemt de drie grootste opties. Aanleiding: 1,58 MB aan autoloaded opties van een allang verwijderde security-plugin, ingelezen bij elke pageload.
+* Nieuw: Health check controleert cron op taken die over tijd zijn, dubbel ingeplande hooks en een buitensporig totaal.
+* Nieuw: Media-scanner meldt mediarecords waarvan het bestand van schijf verdwenen is — los van "ongebruikt". Aanleiding: WPvivid Imgoptim liep maandenlang in een lus op één zo'n dood record (~400 runs per dag).
+* Filters: mcm_log_monitor_max_dir_bytes, mcm_log_monitor_max_dir_files, mcm_log_monitor_log_dirs, mcm_optimizer_max_autoload_bytes, mcm_optimizer_cron_late_seconds, mcm_optimizer_max_cron_events
+
+
+= 1.6.0 (2026-06-17) =
+* Nieuw: Log-monitor. Dagelijkse check op te grote logs. Wordt wp-content/debug.log
+  groter dan de drempel (standaard 50 MB, filter mcm_log_monitor_max_bytes), dan
+  wordt het atomisch weggerotateerd naar een beschermde archiefmap op de site
+  (wp-content/uploads/mcm-log-archives/) en begint het draaiende log weer schoon.
+* Andere *.log onder wp-content worden gesignaleerd (niet aangeraakt — kunnen van
+  een plugin zijn). Eén mail naar marco@mcmwebsites.nl per keer dat een log de
+  drempel overschrijdt (anti-spam via state per pad).
+* De plugin raakt bewust GEEN Hetzner-credentials aan; het archief blijft op de
+  site tot het handmatig naar werk/<klant>/logs/ gehaald wordt.
+
 = 1.5.0 (2026-06-17) =
 * Nieuw: rol "MCM Klant +" (mcm_klant_plus) — identiek aan MCM Klant, maar MÉT
   menu-beheer. Opt-in per klant: de standaard mcm_klant blijft volledig

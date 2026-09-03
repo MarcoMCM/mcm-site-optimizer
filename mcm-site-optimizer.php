@@ -3,7 +3,7 @@
  * Plugin Name: MCM Site Optimizer
  * Plugin URI:  https://github.com/MarcoMCM/mcm-site-optimizer
  * Description: Site optimalisatie tool voor MCM Websites klanten. Database opschoning, ongebruikte media detectie, image sizes beheer en meer.
- * Version: 1.5.0
+ * Version: 1.7.1
  * Author: MCM Websites
  * Author URI: https://mcmwebsites.nl
  * Update URI: https://github.com/MarcoMCM/mcm-site-optimizer
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MCM_OPTIMIZER_VERSION', '1.5.0' );
+define( 'MCM_OPTIMIZER_VERSION', '1.7.1' );
 define( 'MCM_OPTIMIZER_FILE', __FILE__ );
 define( 'MCM_OPTIMIZER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MCM_OPTIMIZER_URL', plugin_dir_url( __FILE__ ) );
@@ -41,6 +41,8 @@ require_once MCM_OPTIMIZER_DIR . 'includes/class-media-scanner.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-performance.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-image-optim.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-nepaccount-scanner.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-log-monitor.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-cache-guard.php';
 
 /**
  * Main plugin class.
@@ -95,6 +97,7 @@ final class MCM_Site_Optimizer {
 	 */
 	public function deactivate() {
 		// Bewaar instellingen en logs voor heractivatie.
+		wp_clear_scheduled_hook( 'mcm_log_monitor_check' );
 	}
 
 	/**
