@@ -3,7 +3,7 @@
  * Plugin Name: MCM Site Optimizer
  * Plugin URI:  https://github.com/MarcoMCM/mcm-site-optimizer
  * Description: Site optimalisatie tool voor MCM Websites klanten. Database opschoning, ongebruikte media detectie, image sizes beheer en meer.
- * Version: 1.7.1
+ * Version: 1.8.0
  * Author: MCM Websites
  * Author URI: https://mcmwebsites.nl
  * Update URI: https://github.com/MarcoMCM/mcm-site-optimizer
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MCM_OPTIMIZER_VERSION', '1.7.1' );
+define( 'MCM_OPTIMIZER_VERSION', '1.8.0' );
 define( 'MCM_OPTIMIZER_FILE', __FILE__ );
 define( 'MCM_OPTIMIZER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MCM_OPTIMIZER_URL', plugin_dir_url( __FILE__ ) );
@@ -127,6 +127,7 @@ final class MCM_Site_Optimizer {
 				'orphaned_postmeta',
 				'orphaned_commentmeta',
 				'autoloaded_options',
+				'orphaned_plugin_options',
 			],
 			'actief'  => [
 				'expired_transients',
@@ -140,6 +141,7 @@ final class MCM_Site_Optimizer {
 				'duplicate_postmeta',
 				'autoloaded_options',
 				'active_transients',
+				'orphaned_plugin_options',
 			],
 			'webshop' => [
 				'expired_transients',
@@ -154,6 +156,7 @@ final class MCM_Site_Optimizer {
 				'autoloaded_options',
 				'active_transients',
 				'action_scheduler',
+				'orphaned_plugin_options',
 			],
 			'all'     => [
 				'expired_transients',
@@ -168,6 +171,7 @@ final class MCM_Site_Optimizer {
 				'autoloaded_options',
 				'active_transients',
 				'action_scheduler',
+				'orphaned_plugin_options',
 			],
 		];
 	}

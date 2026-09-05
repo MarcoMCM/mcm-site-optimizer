@@ -165,6 +165,10 @@ class MCM_Optimizer_Admin_Page {
 				$result = MCM_Database_Cleaner::clean_action_scheduler( $days );
 				break;
 
+			case 'orphaned_plugin_options':
+				$result = MCM_Database_Cleaner::clean_orphaned_plugin_options();
+				break;
+
 			default:
 				wp_send_json_error( 'Onbekende module: ' . $module );
 		}
@@ -428,6 +432,7 @@ class MCM_Optimizer_Admin_Page {
 			'duplicate_postmeta'    => 'Dubbele Postmeta',
 			'autoloaded_options'    => 'Autoloaded Options',
 			'action_scheduler'      => 'Action Scheduler',
+			'orphaned_plugin_options' => 'Verweesde plugin-opties',
 		];
 	}
 
@@ -458,10 +463,10 @@ jQuery(document).ready(function($) {
 
 	// Welke modules beschikbaar zijn per pakket.
 	var packageModules = {
-		'basis':   ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','autoloaded_options'],
-		'actief':  ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients'],
-		'webshop': ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients','action_scheduler'],
-		'all':     ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients','action_scheduler']
+		'basis':   ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','autoloaded_options','orphaned_plugin_options'],
+		'actief':  ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients','orphaned_plugin_options'],
+		'webshop': ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients','action_scheduler','orphaned_plugin_options'],
+		'all':     ['expired_transients','auto_drafts','spam_comments','trash_comments','trashed_posts','revisions','orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta','autoloaded_options','active_transients','action_scheduler','orphaned_plugin_options']
 	};
 
 	var currentPackage = mcmOptimizer.packageLevel;
@@ -534,6 +539,37 @@ jQuery(document).ready(function($) {
 			'</div>';
 		}
 
+		if (key === 'orphaned_plugin_options') {
+			var oGroups = data.groups || [];
+			if (!oGroups.length) {
+				return '<div class="mcm-opt-module-card">' +
+					'<div class="mcm-opt-module-header">' +
+						'<span class="mcm-opt-module-label">' + labels[key] + '</span>' +
+						riskBadge('safe') +
+					'</div>' +
+					'<div class="mcm-opt-module-count"><span class="mcm-opt-clean-ok">✓ Geen verweesde plugin-opties</span></div>' +
+				'</div>';
+			}
+			var oList = '';
+			var oPlugins = [];
+			for (var oi = 0; oi < oGroups.length; oi++) {
+				var g = oGroups[oi];
+				oPlugins.push(g.label);
+				oList += '<li>' + g.label + ': <strong>' + g.count + '</strong> opties (' + formatSize(g.size_kb) + ')' +
+					(g.autoload ? ' <span class="mcm-opt-img-warn">autoload</span>' : '') + '</li>';
+			}
+			return '<div class="mcm-opt-module-card">' +
+				'<div class="mcm-opt-module-header">' +
+					'<span class="mcm-opt-module-label">' + labels[key] + '</span>' +
+					riskBadge('warning') +
+				'</div>' +
+				'<div class="mcm-opt-module-count">' + data.count + ' opties (' + formatSize(data.size_kb) + ')</div>' +
+				'<ul class="mcm-opt-orphan-list">' + oList + '</ul>' +
+				'<div class="mcm-opt-module-info">Van verwijderde plugins. Er wordt eerst een terugzetbare backup gemaakt.</div>' +
+				'<div class="mcm-opt-module-actions"><button class="button mcm-opt-btn-clean-orphaned" data-module="orphaned_plugin_options" data-plugins="' + oPlugins.join(', ').replace(/"/g,'') + '">Opschonen</button></div>' +
+			'</div>';
+		}
+
 		var cleanBtn = count > 0
 			? '<button class="button mcm-opt-btn-clean" data-module="' + key + '">Opschonen</button>'
 			: '<span class="mcm-opt-clean-ok">✓ Schoon</span>';
@@ -580,7 +616,7 @@ jQuery(document).ready(function($) {
 				'expired_transients','active_transients','revisions','auto_drafts',
 				'spam_comments','trash_comments','trashed_posts',
 				'orphaned_postmeta','orphaned_commentmeta','duplicate_postmeta',
-				'autoloaded_options','action_scheduler'
+				'autoloaded_options','orphaned_plugin_options','action_scheduler'
 			];
 
 			for (var i = 0; i < order.length; i++) {
@@ -631,6 +667,35 @@ jQuery(document).ready(function($) {
 			if (response.success) {
 				var del = response.data.result.deleted || 0;
 				btn.replaceWith('<span class="mcm-opt-clean-done">✓ ' + del + ' verwijderd</span>');
+			} else {
+				btn.prop('disabled', false).text('Fout!');
+				alert('Opschonen mislukt: ' + (response.data || 'Onbekende fout'));
+			}
+		}).fail(function() {
+			btn.prop('disabled', false).text('Opnieuw');
+		});
+	});
+
+	// CLEAN verweesde plugin-opties (aparte knop; valt bewust buiten "Alles Opschonen").
+	$(document).on('click', '.mcm-opt-btn-clean-orphaned', function() {
+		var btn = $(this);
+		var plugins = btn.data('plugins') || '';
+		var msg = 'Verwijder de achtergebleven opties van verwijderde plugins?';
+		if (plugins) { msg += '\\n\\nHet gaat om: ' + plugins + '.'; }
+		msg += '\\n\\nEr wordt eerst een terugzetbare backup gemaakt.';
+		if (!confirm(msg)) return;
+
+		btn.prop('disabled', true).text('Bezig...');
+
+		$.post(mcmOptimizer.ajaxUrl, {
+			action: 'mcm_optimizer_clean',
+			nonce: mcmOptimizer.nonce,
+			module: 'orphaned_plugin_options'
+		}, function(response) {
+			if (response.success) {
+				var del = response.data.result.deleted || 0;
+				var bk = response.data.result.backup ? ' (backup opgeslagen)' : '';
+				btn.replaceWith('<span class="mcm-opt-clean-done">✓ ' + del + ' verwijderd' + bk + '</span>');
 			} else {
 				btn.prop('disabled', false).text('Fout!');
 				alert('Opschonen mislukt: ' + (response.data || 'Onbekende fout'));

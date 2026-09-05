@@ -322,6 +322,206 @@ class MCM_Database_Cleaner {
 	}
 
 	/**
+	 * Gecureerde registry: optie-prefix → plugin(s).
+	 *
+	 * Een prefix wordt ALLEEN als "verweesd" behandeld als geen van de
+	 * bijbehorende plugin-mappen nog in wp-content/plugins/ staat. Zo raken we
+	 * nooit opties aan van een plugin die er nog is (actief óf inactief). Blind
+	 * op naam wissen kan niet — opties dragen geen plugin-referentie — dus de
+	 * lijst is bewust gecureerd. Per site uit te breiden via het filter
+	 * 'mcm_optimizer_orphaned_option_prefixes'.
+	 *
+	 * @return array<string,array{label:string,folders:array<int,string>}>
+	 */
+	public static function orphaned_option_registry() {
+		$registry = [
+			'secupress' => [ 'label' => 'SecuPress',                       'folders' => [ 'secupress', 'secupress-pro' ] ],
+			'itsec'     => [ 'label' => 'iThemes / Solid Security',        'folders' => [ 'better-wp-security', 'ithemes-security-pro', 'better-wp-security-pro' ] ],
+			'bwps'      => [ 'label' => 'iThemes (Better WP Security, oud)', 'folders' => [ 'better-wp-security', 'ithemes-security-pro' ] ],
+			'wordfence' => [ 'label' => 'Wordfence',                       'folders' => [ 'wordfence' ] ],
+			'wfls_'     => [ 'label' => 'Wordfence Login Security',        'folders' => [ 'wordfence-login-security', 'wordfence' ] ],
+			'sucuri'    => [ 'label' => 'Sucuri Security',                 'folders' => [ 'sucuri-scanner' ] ],
+			'aiowps_'   => [ 'label' => 'All In One WP Security',          'folders' => [ 'all-in-one-wp-security-and-firewall' ] ],
+			'wpcf-'     => [ 'label' => 'Toolset Types',                   'folders' => [ 'types', 'wp-types', 'toolset-types' ] ],
+			'toolset'   => [ 'label' => 'Toolset',                         'folders' => [ 'toolset-common', 'toolset-blocks', 'types', 'wp-views', 'cred-frontend-editor', 'toolset-maps' ] ],
+			'__CRED'    => [ 'label' => 'Toolset CRED',                    'folders' => [ 'cred-frontend-editor', 'toolset-cred-commerce' ] ],
+		];
+
+		return apply_filters( 'mcm_optimizer_orphaned_option_prefixes', $registry );
+	}
+
+	/**
+	 * Staat minstens één van deze plugin-mappen nog in wp-content/plugins/?
+	 */
+	protected static function any_plugin_installed( array $folders ) {
+		foreach ( $folders as $folder ) {
+			$folder = trim( (string) $folder );
+			if ( '' !== $folder && is_dir( WP_PLUGIN_DIR . '/' . $folder ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Scan verweesde plugin-opties (dry-run): per verwijderde plugin het aantal
+	 * achtergebleven opties, de omvang en of ze autoloaded zijn.
+	 *
+	 * @return array{count:int,size_kb:float,groups:array<int,array>,risk:string}
+	 */
+	public static function scan_orphaned_plugin_options() {
+		global $wpdb;
+
+		$registry    = self::orphaned_option_registry();
+		$groups      = [];
+		$total_count = 0;
+		$total_bytes = 0;
+
+		foreach ( $registry as $prefix => $info ) {
+			// Plugin nog aanwezig? Dan met rust laten.
+			if ( self::any_plugin_installed( (array) ( $info['folders'] ?? [] ) ) ) {
+				continue;
+			}
+
+			$like = $wpdb->esc_like( (string) $prefix ) . '%';
+			$row  = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT COUNT(*) AS cnt,
+					        COALESCE(SUM(LENGTH(option_value)),0) AS bytes,
+					        COALESCE(SUM(autoload IN ('yes','on','auto','auto-on')),0) AS autoload_cnt
+					 FROM {$wpdb->options}
+					 WHERE option_name LIKE %s",
+					$like
+				)
+			);
+
+			$cnt = intval( $row->cnt ?? 0 );
+			if ( $cnt < 1 ) {
+				continue;
+			}
+
+			$bytes         = intval( $row->bytes ?? 0 );
+			$groups[]      = [
+				'prefix'   => (string) $prefix,
+				'label'    => $info['label'] ?? (string) $prefix,
+				'count'    => $cnt,
+				'size_kb'  => round( $bytes / 1024, 1 ),
+				'autoload' => intval( $row->autoload_cnt ?? 0 ) > 0,
+			];
+			$total_count  += $cnt;
+			$total_bytes  += $bytes;
+		}
+
+		return [
+			'count'   => $total_count,
+			'size_kb' => round( $total_bytes / 1024, 1 ),
+			'groups'  => $groups,
+			'risk'    => 'warning',
+		];
+	}
+
+	/**
+	 * Verwijder verweesde plugin-opties — mét terugzetbare backup vooraf.
+	 * Verwijdert alleen wat scan_orphaned_plugin_options() aandraagt (dus enkel
+	 * prefixes waarvan de plugin niet meer geïnstalleerd is).
+	 */
+	public static function clean_orphaned_plugin_options() {
+		global $wpdb;
+
+		$scan = self::scan_orphaned_plugin_options();
+		if ( empty( $scan['groups'] ) ) {
+			return [ 'deleted' => 0 ];
+		}
+
+		// Verzamel de exacte rijen (voor backup én verwijderen).
+		$rows = [];
+		foreach ( $scan['groups'] as $g ) {
+			$like  = $wpdb->esc_like( $g['prefix'] ) . '%';
+			$found = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT option_name, option_value, autoload FROM {$wpdb->options} WHERE option_name LIKE %s",
+					$like
+				),
+				ARRAY_A
+			);
+			foreach ( $found as $r ) {
+				$rows[] = $r;
+			}
+		}
+
+		if ( empty( $rows ) ) {
+			return [ 'deleted' => 0 ];
+		}
+
+		// Backup vóór verwijderen — geen backup, geen delete.
+		$backup = self::backup_options_rows( $rows, 'orphaned-plugin-options' );
+		if ( empty( $backup['ok'] ) ) {
+			return [
+				'deleted' => 0,
+				'error'   => 'Backup mislukt — er is niets verwijderd. (' . ( $backup['error'] ?? 'onbekend' ) . ')',
+			];
+		}
+
+		$deleted = 0;
+		foreach ( $rows as $r ) {
+			$deleted += (int) $wpdb->delete( $wpdb->options, [ 'option_name' => $r['option_name'] ] );
+		}
+
+		return [
+			'deleted' => $deleted,
+			'groups'  => count( $scan['groups'] ),
+			'backup'  => $backup['file'] ?? '',
+		];
+	}
+
+	/**
+	 * Schrijf een set option-rijen naar een terugzetbaar JSON-bestand in een
+	 * beschermde map onder uploads. Retourneert ['ok'=>bool, 'file'=>relpad, ...].
+	 */
+	protected static function backup_options_rows( array $rows, $slug ) {
+		$upload = wp_upload_dir();
+		if ( ! empty( $upload['error'] ) ) {
+			return [ 'ok' => false, 'error' => $upload['error'] ];
+		}
+
+		$dir = trailingslashit( $upload['basedir'] ) . 'mcm-optimizer-backups';
+		if ( ! wp_mkdir_p( $dir ) ) {
+			return [ 'ok' => false, 'error' => 'Kan backup-map niet aanmaken.' ];
+		}
+
+		// Afschermen tegen publieke toegang (opties kunnen config bevatten).
+		if ( ! file_exists( $dir . '/.htaccess' ) ) {
+			@file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" );
+		}
+		if ( ! file_exists( $dir . '/index.php' ) ) {
+			@file_put_contents( $dir . '/index.php', "<?php // Silence is golden.\n" );
+		}
+
+		$file    = $dir . '/' . sanitize_file_name( $slug ) . '-' . gmdate( 'Ymd-His' ) . '.json';
+		$payload = wp_json_encode(
+			[
+				'created' => current_time( 'mysql' ),
+				'table'   => $GLOBALS['wpdb']->options,
+				'note'    => 'MCM Site Optimizer — terugzetbare backup van verwijderde opties.',
+				'rows'    => $rows,
+			],
+			JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+		);
+
+		$written = @file_put_contents( $file, $payload );
+		if ( false === $written ) {
+			return [ 'ok' => false, 'error' => 'Schrijven van backup mislukt.' ];
+		}
+
+		return [
+			'ok'    => true,
+			'file'  => ltrim( str_replace( ABSPATH, '', $file ), '/' ),
+			'bytes' => $written,
+			'rows'  => count( $rows ),
+		];
+	}
+
+	/**
 	 * Log een opschoningsactie.
 	 */
 	public static function log_action( $module, $result ) {

@@ -1,5 +1,21 @@
 MCM Site Optimizer — Changelog
 
+= 1.8.0 (2026-09-05) =
+* Nieuw: Verweesde plugin-opties opruimen (database-sectie). Verwijderde plugins laten vaak
+  tientallen opties in wp_options achter — bv. SecuPress (50 rijen), iThemes Security (itsec),
+  Toolset (wpcf-/toolset/__CRED, deels autoloaded). De health-check zag alleen autoloaded resten;
+  deze module vindt ze allemaal (ook autoload=no).
+  - Gecureerd en veilig: een lijst bekende optie-prefixes -> plugin. Een prefix wordt ALLEEN
+    opgeruimd als die plugin niet meer in wp-content/plugins/ staat (folder-check), dus opties van
+    een nog aanwezige plugin (actief of inactief) blijven met rust. Geen blind "alle prefixes"-wissen.
+  - Uitbreidbaar per site via filter mcm_optimizer_orphaned_option_prefixes.
+  - Legt eerst voor: de scan toont per plugin het aantal opties, de omvang en of ze autoloaded zijn.
+    Verwijderen is een aparte, apart-bevestigde knop die bewust buiten "Alles Opschonen" valt.
+  - Backup voor verwijderen: de rijen gaan eerst naar een terugzetbaar JSON-bestand in
+    uploads/mcm-optimizer-backups/ (afgeschermd met .htaccess). Geen backup = geen delete.
+  - Meegeleverde startlijst: SecuPress, iThemes/Solid Security, Wordfence, Sucuri, All-In-One WP
+    Security, Toolset/Types/CRED.
+
 = 1.7.1 (2026-09-02) =
 * Nieuw: Cache-guard (class-cache-guard.php). Leest WP Rocket's "Nooit cachen"-lijst en stuurt voor die URL's zelf no-cache-headers, zodat Varnish/reverse proxies dezelfde uitsluitingen aanhouden. Aanleiding: op stadsfondshilversum.nl cachete Varnish de Gravity Flow-inbox omdat het WP Rocket's lijst niet kent — bezoekers kregen elkaars evaluatiepagina te zien. Eén lijst onderhouden volstaat nu. Filter: mcm_optimizer_no_cache_uris. Zet header X-MCM-Cache-Guard zodat je kunt controleren dat hij vuurt.
 * Fix: Media-scanner haalde alle post_content in één query op, inclusief revisies — 47,6 MB / 1.782 rijen op een Avada-site, waarvan 1.361 revisies. De scan liep na 25 minuten nog. Nu in batches (filter mcm_optimizer_scan_batch_size, standaard 200) en zonder revisies (filter mcm_optimizer_scan_revisions om ze terug te zetten). Zelfde site: 3 seconden.

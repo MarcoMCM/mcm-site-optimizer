@@ -53,6 +53,9 @@ class MCM_Scanner {
 		// Autoloaded options.
 		$results['autoloaded_options'] = self::scan_autoloaded_options();
 
+		// Verweesde plugin-opties (achtergebleven opties van verwijderde plugins).
+		$results['orphaned_plugin_options'] = MCM_Database_Cleaner::scan_orphaned_plugin_options();
+
 		// Action Scheduler.
 		$results['action_scheduler'] = self::count_action_scheduler();
 
