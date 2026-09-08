@@ -1,5 +1,9 @@
 MCM Site Optimizer — Changelog
 
+= 1.8.1 (2026-09-08) =
+* Nieuw: token-link-guard (class-token-link-guard.php). LAPMIDDEL, niet de oorzaak — die ligt bij de hostingprovider (Xel): hun Varnish laat de cookie 'gflow_access_token' niet door naar de server (bewezen op stadsfondshilversum.nl: curl stuurt de cookie aantoonbaar mee, PHP ziet $_SERVER['HTTP_COOKIE'] leeg voor exact hetzelfde verzoek). Gravity Flow zet na het lezen van een token-link een cookie en stuurt door naar een kale URL die van die cookie afhankelijk is — komt de cookie niet aan, dan blijft die kale URL voor altijd leeg. Deze klasse zet Gravity Flow's redirect-naar-cookie-stap uit zodra er een token in de URL staat, zodat het token bij elk bezoek uit de link zelf gelezen wordt. Geen cookie nodig, dus onafhankelijk van Varnish. Filter: mcm_optimizer_token_link_guard_enabled.
+* Structurele oplossing (niet in deze plugin): Xel vragen 'gflow_access_token' toe te voegen aan hun Varnish-cookie-whitelist, net als wordpress_logged_in_*.
+
 = 1.8.0 (2026-09-05) =
 * Nieuw: Verweesde plugin-opties opruimen (database-sectie). Verwijderde plugins laten vaak
   tientallen opties in wp_options achter — bv. SecuPress (50 rijen), iThemes Security (itsec),
