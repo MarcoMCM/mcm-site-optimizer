@@ -3,7 +3,7 @@
  * Plugin Name: MCM Site Optimizer
  * Plugin URI:  https://github.com/MarcoMCM/mcm-site-optimizer
  * Description: Site optimalisatie tool voor MCM Websites klanten. Database opschoning, ongebruikte media detectie, image sizes beheer en meer.
- * Version: 1.8.1
+ * Version: 1.8.2
  * Author: MCM Websites
  * Author URI: https://mcmwebsites.nl
  * Update URI: https://github.com/MarcoMCM/mcm-site-optimizer
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MCM_OPTIMIZER_VERSION', '1.8.1' );
+define( 'MCM_OPTIMIZER_VERSION', '1.8.2' );
 define( 'MCM_OPTIMIZER_FILE', __FILE__ );
 define( 'MCM_OPTIMIZER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MCM_OPTIMIZER_URL', plugin_dir_url( __FILE__ ) );
@@ -44,6 +44,7 @@ require_once MCM_OPTIMIZER_DIR . 'includes/class-nepaccount-scanner.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-log-monitor.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-cache-guard.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-token-link-guard.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-upload-token-relay.php';
 
 /**
  * Main plugin class.
