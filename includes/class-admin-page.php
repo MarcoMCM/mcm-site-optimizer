@@ -107,13 +107,31 @@ class MCM_Optimizer_Admin_Page {
 		$module   = sanitize_key( $_POST['module'] ?? '' );
 		$settings = get_option( 'mcm_optimizer_settings', MCM_Site_Optimizer::get_defaults() );
 
+		// Opschoning in delen: 'vanaf' = waar de vorige ronde bleef, 'eerder' =
+		// wat die rondes samen al verwijderden (alleen voor de log).
+		$vervolg = ! empty( $_POST['vervolg'] );
+		$vanaf   = absint( $_POST['vanaf'] ?? 0 );
+		$eerder  = absint( $_POST['eerder'] ?? 0 );
+
 		// Check of module beschikbaar is voor dit pakket.
 		if ( ! MCM_Site_Optimizer::module_available( $module ) ) {
 			wp_send_json_error( 'Module niet beschikbaar voor dit pakket.' );
 		}
 
-		// Pre-snapshot opslaan.
-		MCM_Health_Check::save_pre_snapshot();
+		// "Alles Opschonen" mag alleen de modules uit bulk_modules() raken. Ook
+		// hier gecontroleerd, niet alleen in de knop.
+		if ( ! empty( $_POST['bulk'] ) && ! in_array( $module, MCM_Database_Cleaner::bulk_modules(), true ) ) {
+			wp_send_json_error( 'Deze module valt buiten "Alles Opschonen". Schoon hem per stuk op.' );
+		}
+
+		wp_raise_memory_limit( 'admin' );
+		@set_time_limit( 120 );
+
+		// Pre-snapshot opslaan — alleen aan het begin van een opschoonronde,
+		// anders is "vóór" bij de vergelijking de stand van halverwege.
+		if ( ! $vervolg && '0' !== ( $_POST['snapshot'] ?? '1' ) ) {
+			MCM_Health_Check::save_pre_snapshot();
+		}
 
 		$result = [];
 
@@ -133,7 +151,7 @@ class MCM_Optimizer_Admin_Page {
 				break;
 
 			case 'auto_drafts':
-				$result = MCM_Database_Cleaner::clean_auto_drafts();
+				$result = MCM_Database_Cleaner::clean_auto_drafts( $vanaf );
 				break;
 
 			case 'spam_comments':
@@ -145,15 +163,15 @@ class MCM_Optimizer_Admin_Page {
 				break;
 
 			case 'trashed_posts':
-				$result = MCM_Database_Cleaner::clean_trashed_posts();
+				$result = MCM_Database_Cleaner::clean_trashed_posts( $vanaf );
 				break;
 
 			case 'orphaned_postmeta':
-				$result = MCM_Database_Cleaner::clean_orphaned_postmeta();
+				$result = MCM_Database_Cleaner::clean_orphaned_postmeta( $vanaf );
 				break;
 
 			case 'orphaned_commentmeta':
-				$result = MCM_Database_Cleaner::clean_orphaned_commentmeta();
+				$result = MCM_Database_Cleaner::clean_orphaned_commentmeta( $vanaf );
 				break;
 
 			case 'duplicate_postmeta':
@@ -162,7 +180,7 @@ class MCM_Optimizer_Admin_Page {
 
 			case 'action_scheduler':
 				$days   = intval( $settings['action_scheduler_days'] ?? 30 );
-				$result = MCM_Database_Cleaner::clean_action_scheduler( $days );
+				$result = MCM_Database_Cleaner::clean_action_scheduler( $days, $vanaf );
 				break;
 
 			case 'orphaned_plugin_options':
@@ -173,8 +191,12 @@ class MCM_Optimizer_Admin_Page {
 				wp_send_json_error( 'Onbekende module: ' . $module );
 		}
 
-		// Log de actie.
-		MCM_Database_Cleaner::log_action( $module, $result );
+		// Log de actie; bij een vervolgronde met het totaal van alle rondes.
+		$log_result = $result;
+		if ( isset( $log_result['deleted'] ) ) {
+			$log_result['deleted'] = $eerder + intval( $log_result['deleted'] );
+		}
+		MCM_Database_Cleaner::log_action( $module, $log_result, $vervolg );
 
 		wp_send_json_success( [
 			'module' => $module,
@@ -400,7 +422,14 @@ class MCM_Optimizer_Admin_Page {
 							<td>
 								<?php
 								if ( isset( $entry['result']['deleted'] ) ) {
-									echo esc_html( $entry['result']['deleted'] . ' items verwijderd' );
+									$tekst = $entry['result']['deleted'] . ' items verwijderd';
+									if ( ! empty( $entry['result']['more'] ) ) {
+										$tekst .= ' (niet afgemaakt)';
+									}
+									if ( ! empty( $entry['result']['error'] ) ) {
+										$tekst .= ' — ' . $entry['result']['error'];
+									}
+									echo esc_html( $tekst );
 								} else {
 									echo esc_html( wp_json_encode( $entry['result'] ) );
 								}
@@ -437,6 +466,21 @@ class MCM_Optimizer_Admin_Page {
 	}
 
 	/**
+	 * Waarschuwing bij de modules die alleen per stuk mogen (risico 'danger',
+	 * buiten "Alles Opschonen"). Staat op de kaart en in de bevestiging.
+	 */
+	public static function get_module_warnings() {
+		return [
+			'active_transients'  => 'Deze tijdelijke opslag is nog geldig. Plugins bewaren hier soms gegevens van een lopend proces (import, betaling, koppeling); weghalen kan dat proces laten mislukken. Alleen doen met een reden, en niet tijdens een import of drukte.',
+			'duplicate_postmeta' => 'Sommige plugins slaan bewust dezelfde waarde vaker op. WooCommerce telt zo het gebruik van een coupon (_used_by); die rijen blijven staan. Van andere plugins weet je het niet zeker. Van wat weggaat wordt eerst een backup gemaakt.',
+			'trashed_posts'      => sprintf(
+				'De prullenbak is de \'ongedaan maken\' van WordPress: hij leegt zichzelf na %d dagen. Wat je nu weghaalt, is niet meer terug te zetten. Bestellingen worden overgeslagen; die beheert WooCommerce.',
+				defined( 'EMPTY_TRASH_DAYS' ) ? (int) EMPTY_TRASH_DAYS : 30
+			),
+		];
+	}
+
+	/**
 	 * Risiconiveau info.
 	 */
 	public static function get_risk_info() {
@@ -452,14 +496,25 @@ class MCM_Optimizer_Admin_Page {
 	 * ------------------------------------------------------------- */
 
 	private function get_js() {
-		$labels = wp_json_encode( self::get_module_labels() );
-		$risk   = wp_json_encode( self::get_risk_info() );
+		$labels   = wp_json_encode( self::get_module_labels() );
+		$risk     = wp_json_encode( self::get_risk_info() );
+		$bulk     = wp_json_encode( MCM_Database_Cleaner::bulk_modules() );
+		$warnings = wp_json_encode( self::get_module_warnings() );
 
 		return <<<JS
 jQuery(document).ready(function($) {
 
 	var labels = {$labels};
 	var riskInfo = {$risk};
+	// Alleen deze modules gaan mee met "Alles Opschonen"; de rest per stuk.
+	var bulkModules = {$bulk};
+	var warnings = {$warnings};
+
+	function esc(s) {
+		return String(s).replace(/[&<>"']/g, function(c) {
+			return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+		});
+	}
 
 	// Welke modules beschikbaar zijn per pakket.
 	var packageModules = {
@@ -491,6 +546,7 @@ jQuery(document).ready(function($) {
 
 		var count = 0;
 		var extra = '';
+		var sub = []; // uitleg op een kleine regel onder het getal
 		var risk = data.risk || 'warning';
 
 		switch(key) {
@@ -512,6 +568,26 @@ jQuery(document).ready(function($) {
 			case 'duplicate_postmeta':
 				count = data.excess_rows;
 				extra = ' (' + data.groups + ' groepen)';
+				if (data.skipped_rows > 0) {
+					sub.push(data.skipped_rows + ' bewust dubbel (' + esc((data.skip_keys || []).join(', ')) + ') blijven staan');
+				}
+				break;
+			case 'auto_drafts':
+				count = data.count;
+				if (data.recent > 0) {
+					sub.push(data.recent + ' jonger dan ' + data.days + ' dagen blijven staan');
+				}
+				break;
+			case 'trashed_posts':
+				count = data.count;
+				var tTypes = [];
+				for (var ti = 0; ti < (data.types || []).length; ti++) {
+					tTypes.push(data.types[ti].count + ' ' + esc(data.types[ti].label));
+				}
+				if (tTypes.length) sub.push(tTypes.join(', '));
+				if (data.orders_skipped > 0) {
+					sub.push(data.orders_skipped + ' bestellingen overgeslagen (beheert WooCommerce)');
+				}
 				break;
 			case 'autoloaded_options':
 				count = data.total_size_kb;
@@ -570,9 +646,13 @@ jQuery(document).ready(function($) {
 			'</div>';
 		}
 
+		var perStuk = bulkModules.indexOf(key) === -1;
 		var cleanBtn = count > 0
-			? '<button class="button mcm-opt-btn-clean" data-module="' + key + '">Opschonen</button>'
+			? '<button class="button mcm-opt-btn-clean" data-module="' + key + '" data-risk="' + risk + '">' + (perStuk ? 'Opschonen (los)' : 'Opschonen') + '</button>'
 			: '<span class="mcm-opt-clean-ok">✓ Schoon</span>';
+		var info = (count > 0 && warnings[key])
+			? '<div class="mcm-opt-module-info mcm-opt-module-warning">' + esc(warnings[key]) + '</div>'
+			: '';
 
 		return '<div class="mcm-opt-module-card">' +
 			'<div class="mcm-opt-module-header">' +
@@ -580,8 +660,65 @@ jQuery(document).ready(function($) {
 				riskBadge(risk) +
 			'</div>' +
 			'<div class="mcm-opt-module-count">' + count + ' items' + extra + '</div>' +
+			(sub.length ? '<div class="mcm-opt-module-extra">' + sub.join(' · ') + '</div>' : '') +
+			info +
 			'<div class="mcm-opt-module-actions">' + cleanBtn + '</div>' +
 		'</div>';
+	}
+
+	// Voer één module uit. Grote opschoningen lopen in delen: de server stopt
+	// na een tijdsbudget met 'more' en 'vanaf', en wij gaan verder waar hij bleef.
+	// opts: bulk (bool), snapshot (bool, standaard true), progress(totaal).
+	// done(ok, totaal, resultaat-of-foutmelding).
+	function runClean(mod, opts, done) {
+		var totaal = 0;
+		var rondes = 0;
+
+		function stap(vanaf) {
+			$.post(mcmOptimizer.ajaxUrl, {
+				action: 'mcm_optimizer_clean',
+				nonce: mcmOptimizer.nonce,
+				module: mod,
+				bulk: opts.bulk ? 1 : 0,
+				snapshot: opts.snapshot === false ? 0 : 1,
+				vervolg: rondes > 0 ? 1 : 0,
+				vanaf: vanaf,
+				eerder: totaal
+			}, function(response) {
+				if (!response.success) {
+					done(false, totaal, response.data || 'Onbekende fout');
+					return;
+				}
+				var r = response.data.result || {};
+				var del = parseInt(r.deleted, 10) || 0;
+				var volgende = parseInt(r.vanaf, 10) || 0;
+				totaal += del;
+				rondes++;
+				if (r.error) {
+					done(false, totaal, r.error);
+					return;
+				}
+				if (opts.progress) opts.progress(totaal);
+				// Verder zolang er meer is én de vorige ronde iets opschoot —
+				// vangnet tegen een eindeloze lus.
+				if (r.more && (del > 0 || volgende > vanaf) && rondes < 500) {
+					stap(volgende);
+					return;
+				}
+				done(true, totaal, r);
+			}).fail(function(xhr) {
+				done(false, totaal, 'Verbindingsfout (HTTP ' + (xhr.status || '?') + ')');
+			});
+		}
+
+		stap(0);
+	}
+
+	function klaarTekst(totaal, r) {
+		var t = '✓ ' + totaal + ' verwijderd';
+		if (r && r.more) t += ' (niet afgemaakt — klik opnieuw op Scan)';
+		if (r && r.backup) t += ' (backup opgeslagen)';
+		return t;
 	}
 
 	// SCAN
@@ -628,12 +765,25 @@ jQuery(document).ready(function($) {
 
 			html += '</div>';
 
+			// Wat "Alles Opschonen" bewust laat liggen (alleen per stuk).
+			var losLabels = [];
+			for (var j = 0; j < order.length; j++) {
+				var lk = order[j];
+				if (d[lk] && isModuleAvailable(lk) && bulkModules.indexOf(lk) === -1 && warnings[lk]) {
+					losLabels.push(labels[lk]);
+				}
+			}
+
 			// Alles opschonen knop.
 			html += '<div class="mcm-opt-bulk-actions">';
 			html += '<button type="button" id="mcm-clean-all" class="button mcm-opt-btn-primary mcm-opt-btn-large">';
 			html += '<span class="dashicons dashicons-trash" style="vertical-align:middle;margin-top:-2px;"></span> ';
-			html += 'Alles Opschonen (veilig + waarschuwing)';
+			html += 'Alles Opschonen (Veilig + Controleren)';
 			html += '</button>';
+			if (losLabels.length) {
+				html += '<p class="mcm-opt-bulk-note">Niet meegenomen: ' + losLabels.join(', ') + '. ' +
+					'Die kunnen gegevens bevatten die nog nodig zijn; schoon ze alleen los op, met een reden.</p>';
+			}
 			html += '</div>';
 
 			$('#mcm-scan-results').html(html);
@@ -648,31 +798,29 @@ jQuery(document).ready(function($) {
 	$(document).on('click', '.mcm-opt-btn-clean', function() {
 		var btn = $(this);
 		var mod = btn.data('module');
-		var risk = btn.closest('.mcm-opt-module-card').find('.mcm-opt-risk-badge').text().trim();
+		var risk = btn.data('risk');
 
 		var msg = 'Weet je zeker dat je "' + labels[mod] + '" wilt opschonen?';
-		if (risk === 'Controleren' || risk === 'Let op') {
-			msg += '\\n\\nLet op: dit is een actie met waarschuwingsniveau. Controleer of je een recente backup hebt.';
+		if (warnings[mod]) {
+			msg += '\\n\\n' + warnings[mod];
+		}
+		if (risk === 'warning' || risk === 'danger') {
+			msg += '\\n\\nControleer of je een recente backup hebt.';
 		}
 
 		if (!confirm(msg)) return;
 
 		btn.prop('disabled', true).text('Bezig...');
 
-		$.post(mcmOptimizer.ajaxUrl, {
-			action: 'mcm_optimizer_clean',
-			nonce: mcmOptimizer.nonce,
-			module: mod
-		}, function(response) {
-			if (response.success) {
-				var del = response.data.result.deleted || 0;
-				btn.replaceWith('<span class="mcm-opt-clean-done">✓ ' + del + ' verwijderd</span>');
+		runClean(mod, {
+			progress: function(totaal) { btn.text('Bezig... ' + totaal + ' verwijderd'); }
+		}, function(ok, totaal, r) {
+			if (ok) {
+				btn.replaceWith('<span class="mcm-opt-clean-done">' + klaarTekst(totaal, r) + '</span>');
 			} else {
-				btn.prop('disabled', false).text('Fout!');
-				alert('Opschonen mislukt: ' + (response.data || 'Onbekende fout'));
+				btn.prop('disabled', false).text('Opnieuw');
+				alert('Opschonen mislukt: ' + r + (totaal ? '\\n\\nWel al verwijderd: ' + totaal + '.' : ''));
 			}
-		}).fail(function() {
-			btn.prop('disabled', false).text('Opnieuw');
 		});
 	});
 
@@ -705,19 +853,38 @@ jQuery(document).ready(function($) {
 		});
 	});
 
-	// CLEAN ALL.
+	// CLEAN ALL — alleen de modules uit bulkModules. Actieve transients, dubbele
+	// postmeta en de prullenbak blijven liggen; die gaan alleen per stuk.
 	$(document).on('click', '#mcm-clean-all', function() {
-		if (!confirm('Weet je zeker dat je ALLE beschikbare modules wilt opschonen?\\n\\nEr wordt eerst een health check snapshot gemaakt.')) {
+		var modules = [];
+		var overgeslagen = [];
+		$('.mcm-opt-btn-clean').each(function() {
+			var m = $(this).data('module');
+			if (bulkModules.indexOf(m) !== -1) {
+				modules.push(m);
+			} else {
+				overgeslagen.push(labels[m]);
+			}
+		});
+
+		if (!modules.length) {
+			alert('Er is niets dat "Alles Opschonen" mag meenemen.' +
+				(overgeslagen.length ? '\\n\\nLos op te schonen: ' + overgeslagen.join(', ') + '.' : ''));
+			return;
+		}
+
+		var msg = 'Deze onderdelen worden opgeschoond:\\n- ' +
+			modules.map(function(m) { return labels[m]; }).join('\\n- ');
+		if (overgeslagen.length) {
+			msg += '\\n\\nNiet meegenomen (alleen los): ' + overgeslagen.join(', ') + '.';
+		}
+		msg += '\\n\\nEr wordt eerst een health check snapshot gemaakt.';
+		if (!confirm(msg)) {
 			return;
 		}
 
 		var btn = $(this);
 		btn.prop('disabled', true).text('Bezig met opschonen...');
-
-		var modules = [];
-		$('.mcm-opt-btn-clean').each(function() {
-			modules.push($(this).data('module'));
-		});
 
 		var idx = 0;
 
@@ -732,18 +899,17 @@ jQuery(document).ready(function($) {
 			var modBtn = $('.mcm-opt-btn-clean[data-module="' + mod + '"]');
 			modBtn.prop('disabled', true).text('Bezig...');
 
-			$.post(mcmOptimizer.ajaxUrl, {
-				action: 'mcm_optimizer_clean',
-				nonce: mcmOptimizer.nonce,
-				module: mod
-			}, function(response) {
-				if (response.success) {
-					var del = response.data.result.deleted || 0;
-					modBtn.replaceWith('<span class="mcm-opt-clean-done">✓ ' + del + ' verwijderd</span>');
+			runClean(mod, {
+				bulk: true,
+				// Eén snapshot vóór de eerste module, zodat "vóór" in de vergelijking klopt.
+				snapshot: idx === 0,
+				progress: function(totaal) { modBtn.text('Bezig... ' + totaal + ' verwijderd'); }
+			}, function(ok, totaal, r) {
+				if (ok) {
+					modBtn.replaceWith('<span class="mcm-opt-clean-done">' + klaarTekst(totaal, r) + '</span>');
+				} else {
+					modBtn.prop('disabled', false).text('Mislukt: ' + r);
 				}
-				idx++;
-				cleanNext();
-			}).fail(function() {
 				idx++;
 				cleanNext();
 			});
@@ -1071,6 +1237,20 @@ JS;
 	text-align: center;
 	padding: 16px 0 0;
 	border-top: 1px solid var(--mcm-border);
+}
+.mcm-opt-bulk-note {
+	max-width: 560px;
+	margin: 10px auto 0;
+	font-size: 12px;
+	color: var(--mcm-text-light);
+}
+
+/* Waarschuwing op een kaart die alleen los mag */
+.mcm-opt-module-warning {
+	font-style: normal;
+	color: var(--mcm-terracotta);
+	margin: 6px 0 2px;
+	line-height: 1.45;
 }
 
 /* Health check */

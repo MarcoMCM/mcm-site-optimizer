@@ -197,7 +197,8 @@ class MCM_Scanner {
 			'total_size_kb' => round( $total_size / 1024, 2 ),
 			'groups'      => $groups,
 			'has_images'  => $has_images,
-			'risk'        => 'warning',
+			// Nog geldig = mogelijk in gebruik door een lopend proces. Alleen per stuk.
+			'risk'        => 'danger',
 		];
 	}
 
@@ -225,18 +226,30 @@ class MCM_Scanner {
 	}
 
 	/**
-	 * Tel auto-drafts.
+	 * Tel auto-drafts. Alleen die ouder dan MCM_Database_Cleaner::AUTO_DRAFT_DAYS
+	 * worden opgeschoond; de jongere tellen we apart.
 	 */
 	public static function count_auto_drafts() {
 		global $wpdb;
 
-		$count = $wpdb->get_var(
-			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'auto-draft'"
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				"SELECT COUNT(*) AS totaal,
+				        COALESCE(SUM( DATE_SUB( NOW(), INTERVAL %d DAY ) > post_date ), 0) AS oud
+				 FROM {$wpdb->posts}
+				 WHERE post_status = 'auto-draft'",
+				MCM_Database_Cleaner::AUTO_DRAFT_DAYS
+			)
 		);
 
+		$totaal = intval( $row->totaal ?? 0 );
+		$oud    = intval( $row->oud ?? 0 );
+
 		return [
-			'count' => intval( $count ),
-			'risk'  => 'safe',
+			'count'  => $oud,
+			'recent' => $totaal - $oud,
+			'days'   => MCM_Database_Cleaner::AUTO_DRAFT_DAYS,
+			'risk'   => 'safe',
 		];
 	}
 
@@ -273,18 +286,45 @@ class MCM_Scanner {
 	}
 
 	/**
-	 * Tel trashed posts.
+	 * Tel trashed posts, per post type. Bestellingen tellen niet mee: die slaat
+	 * de opschoning over (zie MCM_Database_Cleaner::order_post_types()).
 	 */
 	public static function count_trashed_posts() {
 		global $wpdb;
 
-		$count = $wpdb->get_var(
-			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'trash'"
+		$per_type = $wpdb->get_results(
+			"SELECT post_type, COUNT(*) AS cnt
+			 FROM {$wpdb->posts}
+			 WHERE post_status = 'trash'
+			 GROUP BY post_type
+			 ORDER BY cnt DESC"
 		);
 
+		$skip   = MCM_Database_Cleaner::order_post_types();
+		$count  = 0;
+		$orders = 0;
+		$types  = [];
+
+		foreach ( $per_type as $row ) {
+			$cnt = intval( $row->cnt );
+			if ( in_array( $row->post_type, $skip, true ) ) {
+				$orders += $cnt;
+				continue;
+			}
+			$count += $cnt;
+			$object = get_post_type_object( $row->post_type );
+			$types[] = [
+				'label' => $object ? $object->labels->name : $row->post_type,
+				'count' => $cnt,
+			];
+		}
+
 		return [
-			'count' => intval( $count ),
-			'risk'  => 'safe',
+			'count'          => $count,
+			'types'          => array_slice( $types, 0, 5 ),
+			'orders_skipped' => $orders,
+			// Prullenbak = de 'ongedaan maken'. Alleen per stuk.
+			'risk'           => 'danger',
 		];
 	}
 
@@ -328,33 +368,50 @@ class MCM_Scanner {
 
 	/**
 	 * Tel dubbele postmeta (zelfde post_id + meta_key + meta_value).
+	 *
+	 * Eén scan in plaats van twee, en gegroepeerd op MD5(meta_value): GROUP BY
+	 * op een longtext kijkt alleen naar de eerste max_sort_length bytes, dus
+	 * lange waarden met een gelijk begin telden als dubbel. Rijen met een
+	 * meta_key uit MCM_Database_Cleaner::duplicate_postmeta_skip_keys()
+	 * (WooCommerce `_used_by`) worden apart geteld; die blijven staan.
 	 */
 	public static function count_duplicate_postmeta() {
 		global $wpdb;
 
-		$count = $wpdb->get_var(
-			"SELECT COUNT(*) FROM (
-				SELECT post_id, meta_key, meta_value, COUNT(*) as cnt
+		$skip_sql = MCM_Database_Cleaner::duplicate_postmeta_skip_sql();
+
+		$rows = $wpdb->get_results(
+			"SELECT overslaan, COUNT(*) AS groepen, SUM(cnt - 1) AS overtollig FROM (
+				SELECT ( {$skip_sql} ) AS overslaan, COUNT(*) AS cnt
 				FROM {$wpdb->postmeta}
-				GROUP BY post_id, meta_key, meta_value
+				WHERE meta_key IS NOT NULL
+				AND meta_value IS NOT NULL
+				GROUP BY post_id, meta_key, MD5(meta_value)
 				HAVING cnt > 1
-			) as dupes"
+			) AS dupes
+			GROUP BY overslaan"
 		);
 
-		// Tel het totaal aan overtollige rijen (totaal - unieke).
-		$excess = $wpdb->get_var(
-			"SELECT SUM(cnt - 1) FROM (
-				SELECT post_id, meta_key, meta_value, COUNT(*) as cnt
-				FROM {$wpdb->postmeta}
-				GROUP BY post_id, meta_key, meta_value
-				HAVING cnt > 1
-			) as dupes"
-		);
+		$groups  = 0;
+		$excess  = 0;
+		$skipped = 0;
+
+		foreach ( $rows as $row ) {
+			if ( intval( $row->overslaan ) ) {
+				$skipped += intval( $row->overtollig );
+				continue;
+			}
+			$groups += intval( $row->groepen );
+			$excess += intval( $row->overtollig );
+		}
 
 		return [
-			'groups'       => intval( $count ),
-			'excess_rows'  => intval( $excess ?: 0 ),
-			'risk'         => 'warning',
+			'groups'       => $groups,
+			'excess_rows'  => $excess,
+			'skipped_rows' => $skipped,
+			'skip_keys'    => MCM_Database_Cleaner::duplicate_postmeta_skip_keys(),
+			// Soms bewust dubbel; van onbekende plugins weet je het niet. Alleen per stuk.
+			'risk'         => 'danger',
 		];
 	}
 

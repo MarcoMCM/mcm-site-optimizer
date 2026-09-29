@@ -2,6 +2,13 @@
 /**
  * Database Cleaner: voert de daadwerkelijke opschoning uit.
  * Elke methode retourneert het aantal verwijderde rijen.
+ *
+ * Grote opschoningen lopen in delen: een methode stopt na een tijdsbudget en
+ * geeft dan 'more' => true terug, plus 'vanaf' (de laatst bekeken ID) waar de
+ * volgende aanroep verder kan. Verwijderen gaat altijd op primaire sleutel, in
+ * korte batches — nooit één lange DELETE over een hele tabel. Op een webshop
+ * staan in posts/postmeta ook de bestellingen, en een checkout die op een lock
+ * wacht, mislukt.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -9,6 +16,119 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class MCM_Database_Cleaner {
+
+	/**
+	 * WordPress ruimt auto-drafts zelf op na 7 dagen (wp_delete_auto_drafts).
+	 * Een jongere auto-draft kan van iemand zijn die nú een pagina aanmaakt.
+	 */
+	const AUTO_DRAFT_DAYS = 7;
+
+	/**
+	 * Modules die "Alles Opschonen" mag meenemen. Dit is de enige bron: de knop
+	 * krijgt de lijst mee en ajax_clean() weigert bij een bulk-verzoek alles
+	 * wat er niet in staat.
+	 *
+	 * Bewust NIET in de lijst, alleen per stuk:
+	 * - actieve transients: plugins bewaren er soms gegevens van een lopend
+	 *   proces in (import, betaling, koppeling);
+	 * - dubbele postmeta: soms bewust dubbel (WooCommerce `_used_by`);
+	 * - de prullenbak: de 'ongedaan maken' van WordPress;
+	 * - verweesde plugin-opties: eigen knop, met backup.
+	 */
+	public static function bulk_modules() {
+		return [
+			'expired_transients',
+			'revisions',
+			'auto_drafts',
+			'spam_comments',
+			'trash_comments',
+			'orphaned_postmeta',
+			'orphaned_commentmeta',
+			'action_scheduler',
+		];
+	}
+
+	/**
+	 * Aantal rijen per DELETE. Filter: mcm_optimizer_delete_batch_size.
+	 */
+	protected static function batch_size() {
+		$size = (int) apply_filters( 'mcm_optimizer_delete_batch_size', 500 );
+		return max( 50, min( 2000, $size ) );
+	}
+
+	/**
+	 * Tijdstip waarop een opschoning stopt en 'more' teruggeeft. Ruim binnen
+	 * de timeout van PHP en van een reverse proxy (Varnish).
+	 * Filter: mcm_optimizer_clean_time_budget (seconden).
+	 */
+	protected static function deadline() {
+		$budget = (float) apply_filters( 'mcm_optimizer_clean_time_budget', 15 );
+		return microtime( true ) + max( 2, $budget );
+	}
+
+	/**
+	 * Verwijder rijen op primaire sleutel, in batches. Elke batch is een eigen
+	 * kort statement met een korte pauze erna, zodat andere verzoeken (een
+	 * checkout) tussendoor aan de beurt komen.
+	 */
+	protected static function delete_by_ids( $table, $pk, array $ids ) {
+		global $wpdb;
+
+		$ids     = array_values( array_filter( array_map( 'absint', $ids ) ) );
+		$deleted = 0;
+
+		foreach ( array_chunk( $ids, self::batch_size() ) as $chunk ) {
+			$deleted += (int) $wpdb->query(
+				"DELETE FROM {$table} WHERE {$pk} IN (" . implode( ',', $chunk ) . ')'
+			);
+			usleep( 50000 );
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * Post types van WooCommerce-bestellingen. Die slaat de prullenbak-opschoning
+	 * over: bestellingen vallen onder de fiscale bewaarplicht, en met HPOS zijn
+	 * de rijen in posts placeholders of spiegels van wc_orders — rechtstreeks
+	 * verwijderen laat die twee uit de pas lopen. WooCommerce beheert ze zelf.
+	 */
+	public static function order_post_types() {
+		$types = [ 'shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_subscription' ];
+
+		if ( function_exists( 'wc_get_order_types' ) ) {
+			$types = array_merge( $types, (array) wc_get_order_types() );
+		}
+
+		return array_values( array_unique( array_filter( array_map( 'strval', $types ) ) ) );
+	}
+
+	/**
+	 * Meta-keys die bewust dezelfde waarde vaker op één post hebben en dus
+	 * nooit als "dubbel" gelden. WooCommerce slaat per couponsgebruik een rij
+	 * `_used_by` op (user-ID of e-mail); weghalen verlaagt de teller en breekt
+	 * de limiet per klant. Filter: mcm_optimizer_duplicate_postmeta_skip_keys.
+	 */
+	public static function duplicate_postmeta_skip_keys() {
+		$keys = (array) apply_filters( 'mcm_optimizer_duplicate_postmeta_skip_keys', [ '_used_by' ] );
+		return array_values( array_unique( array_filter( array_map( 'strval', $keys ), 'strlen' ) ) );
+	}
+
+	/**
+	 * SQL-voorwaarde "deze meta_key wordt overgeslagen". Gedeeld door de scan
+	 * en de opschoning, zodat de telling en het resultaat altijd overeenkomen.
+	 */
+	public static function duplicate_postmeta_skip_sql() {
+		global $wpdb;
+
+		$keys = self::duplicate_postmeta_skip_keys();
+		if ( empty( $keys ) ) {
+			return '0';
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+		return $wpdb->prepare( "meta_key IN ({$placeholders})", $keys );
+	}
 
 	/**
 	 * Verwijder expired transients.
@@ -154,21 +274,60 @@ class MCM_Database_Cleaner {
 	}
 
 	/**
-	 * Verwijder auto-drafts.
+	 * Verwijder auto-drafts ouder dan AUTO_DRAFT_DAYS — dezelfde regel als
+	 * WordPress zelf (wp_delete_auto_drafts). Een jongere auto-draft kan van
+	 * iemand zijn die op dit moment een nieuwe pagina aanmaakt.
 	 */
-	public static function clean_auto_drafts() {
+	public static function clean_auto_drafts( $vanaf = 0 ) {
 		global $wpdb;
 
 		$ids = $wpdb->get_col(
-			"SELECT ID FROM {$wpdb->posts} WHERE post_status = 'auto-draft'"
+			$wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts}
+				 WHERE post_status = 'auto-draft'
+				 AND DATE_SUB( NOW(), INTERVAL %d DAY ) > post_date
+				 AND ID > %d
+				 ORDER BY ID
+				 LIMIT %d",
+				self::AUTO_DRAFT_DAYS,
+				absint( $vanaf ),
+				self::batch_size()
+			)
 		);
 
+		return self::delete_posts( $ids );
+	}
+
+	/**
+	 * Verwijder posts permanent via wp_delete_post(), zoals WordPress' eigen
+	 * "Definitief verwijderen": met meta, reacties, termkoppelingen en revisies,
+	 * en met de hooks waarmee plugins (WooCommerce) hun eigen tabellen
+	 * opruimen. Stopt na het tijdsbudget.
+	 *
+	 * @param array $ids Oplopend gesorteerd, hooguit batch_size() stuks.
+	 */
+	protected static function delete_posts( array $ids ) {
+		$deadline = self::deadline();
+		$deleted  = 0;
+		$vanaf    = 0;
+		$more     = count( $ids ) >= self::batch_size();
+
 		foreach ( $ids as $id ) {
-			$wpdb->delete( $wpdb->postmeta, [ 'post_id' => $id ] );
-			$wpdb->delete( $wpdb->posts, [ 'ID' => $id ] );
+			$vanaf = (int) $id;
+			if ( wp_delete_post( $vanaf, true ) ) {
+				$deleted++;
+			}
+			if ( microtime( true ) >= $deadline ) {
+				$more = true;
+				break;
+			}
 		}
 
-		return [ 'deleted' => count( $ids ) ];
+		return [
+			'deleted' => $deleted,
+			'more'    => $more,
+			'vanaf'   => $vanaf,
+		];
 	}
 
 	/**
@@ -208,75 +367,200 @@ class MCM_Database_Cleaner {
 	}
 
 	/**
-	 * Verwijder trashed posts.
+	 * Leeg de prullenbak (berichten, pagina's, producten, ...).
+	 *
+	 * Alleen per stuk, nooit via "Alles Opschonen": de prullenbak is de
+	 * 'ongedaan maken' van WordPress. Via wp_delete_post(), zodat ook reacties,
+	 * termkoppelingen en revisies meegaan — voorheen bleven die als wezen
+	 * achter. Bestellingen worden overgeslagen, zie order_post_types().
 	 */
-	public static function clean_trashed_posts() {
+	public static function clean_trashed_posts( $vanaf = 0 ) {
 		global $wpdb;
+
+		$skip         = self::order_post_types();
+		$placeholders = implode( ',', array_fill( 0, count( $skip ), '%s' ) );
 
 		$ids = $wpdb->get_col(
-			"SELECT ID FROM {$wpdb->posts} WHERE post_status = 'trash'"
+			$wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts}
+				 WHERE post_status = 'trash'
+				 AND post_type NOT IN ({$placeholders})
+				 AND ID > %d
+				 ORDER BY ID
+				 LIMIT %d",
+				array_merge( $skip, [ absint( $vanaf ), self::batch_size() ] )
+			)
 		);
 
-		foreach ( $ids as $id ) {
-			$wpdb->delete( $wpdb->postmeta, [ 'post_id' => $id ] );
-			$wpdb->delete( $wpdb->posts, [ 'ID' => $id ] );
+		return self::delete_posts( $ids );
+	}
+
+	/**
+	 * Verwijder orphaned postmeta: eerst de meta_id's zoeken (een lezende
+	 * query, zonder locks), dan op primaire sleutel verwijderen in batches.
+	 */
+	public static function clean_orphaned_postmeta( $vanaf = 0 ) {
+		global $wpdb;
+
+		return self::delete_orphans(
+			"SELECT pm.meta_id FROM {$wpdb->postmeta} pm
+			 LEFT JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+			 WHERE p.ID IS NULL AND pm.meta_id > %d
+			 ORDER BY pm.meta_id
+			 LIMIT %d",
+			$wpdb->postmeta,
+			'meta_id',
+			$vanaf
+		);
+	}
+
+	/**
+	 * Verwijder orphaned commentmeta, op dezelfde manier als orphaned postmeta.
+	 */
+	public static function clean_orphaned_commentmeta( $vanaf = 0 ) {
+		global $wpdb;
+
+		return self::delete_orphans(
+			"SELECT cm.meta_id FROM {$wpdb->commentmeta} cm
+			 LEFT JOIN {$wpdb->comments} c ON c.comment_ID = cm.comment_id
+			 WHERE c.comment_ID IS NULL AND cm.meta_id > %d
+			 ORDER BY cm.meta_id
+			 LIMIT %d",
+			$wpdb->commentmeta,
+			'meta_id',
+			$vanaf
+		);
+	}
+
+	/**
+	 * Loop met een cursor door de wezen: batch zoeken (vanaf de laatst
+	 * bekeken ID), batch verwijderen op primaire sleutel, tot er niets meer is
+	 * of het tijdsbudget op is.
+	 *
+	 * @param string $select_sql Query met %d voor de cursor en %d voor de limiet.
+	 */
+	protected static function delete_orphans( $select_sql, $table, $pk, $vanaf ) {
+		global $wpdb;
+
+		$deadline = self::deadline();
+		$batch    = self::batch_size();
+		$cursor   = absint( $vanaf );
+		$deleted  = 0;
+		$more     = false;
+
+		while ( true ) {
+			$ids = $wpdb->get_col( $wpdb->prepare( $select_sql, $cursor, $batch ) );
+			if ( empty( $ids ) ) {
+				break;
+			}
+
+			$cursor   = (int) end( $ids );
+			$deleted += self::delete_by_ids( $table, $pk, $ids );
+
+			if ( count( $ids ) < $batch ) {
+				break;
+			}
+			if ( microtime( true ) >= $deadline ) {
+				$more = true;
+				break;
+			}
 		}
 
-		return [ 'deleted' => count( $ids ) ];
+		return [
+			'deleted' => $deleted,
+			'more'    => $more,
+			'vanaf'   => $cursor,
+		];
 	}
 
 	/**
-	 * Verwijder orphaned postmeta.
-	 */
-	public static function clean_orphaned_postmeta() {
-		global $wpdb;
-
-		$deleted = $wpdb->query(
-			"DELETE pm FROM {$wpdb->postmeta} pm
-			 LEFT JOIN {$wpdb->posts} p ON pm.post_id = p.ID
-			 WHERE p.ID IS NULL"
-		);
-
-		return [ 'deleted' => intval( $deleted ) ];
-	}
-
-	/**
-	 * Verwijder orphaned commentmeta.
-	 */
-	public static function clean_orphaned_commentmeta() {
-		global $wpdb;
-
-		$deleted = $wpdb->query(
-			"DELETE cm FROM {$wpdb->commentmeta} cm
-			 LEFT JOIN {$wpdb->comments} c ON cm.comment_id = c.comment_ID
-			 WHERE c.comment_ID IS NULL"
-		);
-
-		return [ 'deleted' => intval( $deleted ) ];
-	}
-
-	/**
-	 * Verwijder dubbele postmeta (behoud de eerste per groep).
+	 * Verwijder dubbele postmeta: rijen met exact dezelfde post_id, meta_key
+	 * en meta_value. De oudste rij (laagste meta_id) blijft staan.
+	 *
+	 * Alleen per stuk. Meta-keys uit duplicate_postmeta_skip_keys() blijven
+	 * altijd staan (WooCommerce `_used_by`). Van wat weggaat wordt eerst een
+	 * terugzetbare backup gemaakt — geen backup, geen delete.
+	 *
+	 * Voorheen was dit één self-join-DELETE over de hele postmeta (1,7 miljoen
+	 * rijen op een grote shop): minutenlang locks. Nu: groepen zoeken via
+	 * MD5 (lezend), per groep exact nagaan met een binaire vergelijking — de
+	 * gewone = negeert hoofdletters en spaties aan het eind — en verwijderen
+	 * op meta_id in batches.
 	 */
 	public static function clean_duplicate_postmeta() {
 		global $wpdb;
 
-		$deleted = $wpdb->query(
-			"DELETE pm1 FROM {$wpdb->postmeta} pm1
-			 INNER JOIN {$wpdb->postmeta} pm2
-			 WHERE pm1.meta_id > pm2.meta_id
-			 AND pm1.post_id = pm2.post_id
-			 AND pm1.meta_key = pm2.meta_key
-			 AND pm1.meta_value = pm2.meta_value"
+		$deadline   = self::deadline();
+		$max_groups = 2000;
+		$skip_sql   = self::duplicate_postmeta_skip_sql();
+
+		$keep_ids = $wpdb->get_col(
+			"SELECT MIN(meta_id) FROM {$wpdb->postmeta}
+			 WHERE meta_key IS NOT NULL
+			 AND meta_value IS NOT NULL
+			 AND NOT ( {$skip_sql} )
+			 GROUP BY post_id, meta_key, MD5(meta_value)
+			 HAVING COUNT(*) > 1
+			 LIMIT {$max_groups}"
 		);
 
-		return [ 'deleted' => intval( $deleted ) ];
+		if ( empty( $keep_ids ) ) {
+			return [ 'deleted' => 0 ];
+		}
+
+		$more = count( $keep_ids ) >= $max_groups;
+		$rows = [];
+
+		foreach ( $keep_ids as $keep_id ) {
+			$dupes = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT pm.meta_id, pm.post_id, pm.meta_key, pm.meta_value
+					 FROM {$wpdb->postmeta} k
+					 INNER JOIN {$wpdb->postmeta} pm
+					   ON pm.post_id = k.post_id AND pm.meta_key = k.meta_key
+					 WHERE k.meta_id = %d
+					 AND pm.meta_id > k.meta_id
+					 AND CAST(pm.meta_value AS BINARY) = CAST(k.meta_value AS BINARY)",
+					$keep_id
+				),
+				ARRAY_A
+			);
+
+			foreach ( $dupes as $d ) {
+				$rows[] = $d;
+			}
+
+			if ( microtime( true ) >= $deadline ) {
+				$more = true;
+				break;
+			}
+		}
+
+		if ( empty( $rows ) ) {
+			return [ 'deleted' => 0 ];
+		}
+
+		$backup = self::backup_rows( $rows, 'duplicate-postmeta', $wpdb->postmeta );
+		if ( empty( $backup['ok'] ) ) {
+			return [
+				'deleted' => 0,
+				'error'   => 'Backup mislukt — er is niets verwijderd. (' . ( $backup['error'] ?? 'onbekend' ) . ')',
+			];
+		}
+
+		return [
+			'deleted' => self::delete_by_ids( $wpdb->postmeta, 'meta_id', wp_list_pluck( $rows, 'meta_id' ) ),
+			'more'    => $more,
+			'backup'  => $backup['file'] ?? '',
+		];
 	}
 
 	/**
-	 * Verwijder Action Scheduler voltooide taken ouder dan X dagen.
+	 * Verwijder Action Scheduler voltooide taken ouder dan X dagen: eerst de
+	 * action_id's zoeken, dan logs en acties op action_id verwijderen in
+	 * batches. Op een drukke shop staan hier honderdduizenden rijen.
 	 */
-	public static function clean_action_scheduler( $days = 30 ) {
+	public static function clean_action_scheduler( $days = 30, $vanaf = 0 ) {
 		global $wpdb;
 
 		$table = $wpdb->prefix . 'actionscheduler_actions';
@@ -295,30 +579,62 @@ class MCM_Database_Cleaner {
 			return [ 'deleted' => 0, 'message' => 'Tabel niet gevonden.' ];
 		}
 
-		$cutoff = date( 'Y-m-d H:i:s', strtotime( "-{$days} days" ) );
-
-		// Verwijder eerst de logs.
-		$wpdb->query(
+		$log_exists = $wpdb->get_var(
 			$wpdb->prepare(
-				"DELETE al FROM {$log_table} al
-				 INNER JOIN {$table} aa ON al.action_id = aa.action_id
-				 WHERE aa.status IN ('complete', 'failed', 'canceled')
-				 AND aa.last_attempt_gmt < %s",
-				$cutoff
+				"SELECT COUNT(*) FROM information_schema.TABLES WHERE table_schema = %s AND table_name = %s",
+				DB_NAME,
+				$log_table
 			)
 		);
 
-		// Verwijder de acties.
-		$deleted = $wpdb->query(
-			$wpdb->prepare(
-				"DELETE FROM {$table}
-				 WHERE status IN ('complete', 'failed', 'canceled')
-				 AND last_attempt_gmt < %s",
-				$cutoff
-			)
-		);
+		$cutoff   = date( 'Y-m-d H:i:s', strtotime( "-{$days} days" ) );
+		$deadline = self::deadline();
+		$batch    = self::batch_size();
+		$cursor   = absint( $vanaf );
+		$deleted  = 0;
+		$more     = false;
 
-		return [ 'deleted' => intval( $deleted ) ];
+		while ( true ) {
+			$ids = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT action_id FROM {$table}
+					 WHERE status IN ('complete', 'failed', 'canceled')
+					 AND last_attempt_gmt < %s
+					 AND action_id > %d
+					 ORDER BY action_id
+					 LIMIT %d",
+					$cutoff,
+					$cursor,
+					$batch
+				)
+			);
+
+			if ( empty( $ids ) ) {
+				break;
+			}
+
+			$cursor = (int) end( $ids );
+
+			// Eerst de logs, dan de acties zelf.
+			if ( $log_exists ) {
+				self::delete_by_ids( $log_table, 'action_id', $ids );
+			}
+			$deleted += self::delete_by_ids( $table, 'action_id', $ids );
+
+			if ( count( $ids ) < $batch ) {
+				break;
+			}
+			if ( microtime( true ) >= $deadline ) {
+				$more = true;
+				break;
+			}
+		}
+
+		return [
+			'deleted' => $deleted,
+			'more'    => $more,
+			'vanaf'   => $cursor,
+		];
 	}
 
 	/**
@@ -454,7 +770,7 @@ class MCM_Database_Cleaner {
 		}
 
 		// Backup vóór verwijderen — geen backup, geen delete.
-		$backup = self::backup_options_rows( $rows, 'orphaned-plugin-options' );
+		$backup = self::backup_rows( $rows, 'orphaned-plugin-options', $wpdb->options );
 		if ( empty( $backup['ok'] ) ) {
 			return [
 				'deleted' => 0,
@@ -475,10 +791,11 @@ class MCM_Database_Cleaner {
 	}
 
 	/**
-	 * Schrijf een set option-rijen naar een terugzetbaar JSON-bestand in een
-	 * beschermde map onder uploads. Retourneert ['ok'=>bool, 'file'=>relpad, ...].
+	 * Schrijf een set rijen (opties, postmeta) naar een terugzetbaar JSON-bestand
+	 * in een beschermde map onder uploads. Retourneert ['ok'=>bool, 'file'=>relpad, ...].
+	 * Een leeg of half geschreven bestand telt als mislukt.
 	 */
-	protected static function backup_options_rows( array $rows, $slug ) {
+	protected static function backup_rows( array $rows, $slug, $table ) {
 		$upload = wp_upload_dir();
 		if ( ! empty( $upload['error'] ) ) {
 			return [ 'ok' => false, 'error' => $upload['error'] ];
@@ -497,19 +814,24 @@ class MCM_Database_Cleaner {
 			@file_put_contents( $dir . '/index.php', "<?php // Silence is golden.\n" );
 		}
 
-		$file    = $dir . '/' . sanitize_file_name( $slug ) . '-' . gmdate( 'Ymd-His' ) . '.json';
+		// Uniek: een vervolgronde binnen dezelfde seconde overschrijft anders de vorige backup.
+		$file    = $dir . '/' . wp_unique_filename( $dir, sanitize_file_name( $slug ) . '-' . gmdate( 'Ymd-His' ) . '.json' );
 		$payload = wp_json_encode(
 			[
 				'created' => current_time( 'mysql' ),
-				'table'   => $GLOBALS['wpdb']->options,
-				'note'    => 'MCM Site Optimizer — terugzetbare backup van verwijderde opties.',
+				'table'   => $table,
+				'note'    => 'MCM Site Optimizer — terugzetbare backup van verwijderde rijen.',
 				'rows'    => $rows,
 			],
 			JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
 		);
 
+		if ( false === $payload || '' === $payload ) {
+			return [ 'ok' => false, 'error' => 'Backup kon niet als JSON worden opgebouwd.' ];
+		}
+
 		$written = @file_put_contents( $file, $payload );
-		if ( false === $written ) {
+		if ( false === $written || $written !== strlen( $payload ) ) {
 			return [ 'ok' => false, 'error' => 'Schrijven van backup mislukt.' ];
 		}
 
@@ -523,16 +845,29 @@ class MCM_Database_Cleaner {
 
 	/**
 	 * Log een opschoningsactie.
+	 *
+	 * @param bool $vervolg Vervolgronde van een opschoning in delen: dan wordt
+	 *                      de vorige regel van dezelfde module bijgewerkt in
+	 *                      plaats van een nieuwe regel per ronde.
 	 */
-	public static function log_action( $module, $result ) {
-		$log = get_option( 'mcm_optimizer_log', [] );
-
-		$log[] = [
+	public static function log_action( $module, $result, $vervolg = false ) {
+		$log   = get_option( 'mcm_optimizer_log', [] );
+		$entry = [
 			'time'    => current_time( 'mysql' ),
 			'module'  => $module,
 			'result'  => $result,
 			'user'    => get_current_user_id(),
 		];
+
+		$last = empty( $log ) ? null : $log[ count( $log ) - 1 ];
+		if ( $vervolg && $last
+			&& ( $last['module'] ?? '' ) === $module
+			&& (int) ( $last['user'] ?? 0 ) === $entry['user']
+			&& ! empty( $last['result']['more'] ) ) {
+			$log[ count( $log ) - 1 ] = $entry;
+		} else {
+			$log[] = $entry;
+		}
 
 		// Bewaar maximaal 100 log entries.
 		if ( count( $log ) > 100 ) {
