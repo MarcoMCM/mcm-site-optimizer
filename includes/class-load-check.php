@@ -90,7 +90,8 @@ class MCM_Load_Check {
 			return null;
 		}
 		return [
-			'forms' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE is_active = 1 AND is_trash = 0" ),
+			'widget' => (bool) is_active_widget( false, false, 'gform_widget', true ),
+			'forms'  => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE is_active = 1 AND is_trash = 0" ),
 			'pages' => (int) $wpdb->get_var( "SELECT COUNT(DISTINCT ID) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type NOT IN ('revision','attachment') AND ( post_content LIKE '%[gravityform%' OR post_content LIKE '%wp:gravityforms/%' )" ),
 		];
 	}
@@ -211,7 +212,9 @@ class MCM_Load_Check {
 			$found ? ( $prod ? 'warn' : 'info' ) : 'ok',
 			$found ? implode( ', ', $found ) : 'geen',
 			'alleen aan als je ze gebruikt',
-			$found ? 'Laden bij elke paginaweergave mee (geheugen/opcache) en vergroten het aanvalsoppervlak. Bestandsbeheerders zijn een bekend inbraakdoel. Zet ze aan als je ze nodig hebt. Let op: WP Debug Toolkit zet bij deactiveren zijn wp-config-back-up in z\'n geheel terug — controleer wp-config daarna.' : '',
+			$found ? 'Laden bij elke paginaweergave mee (geheugen/opcache) en vergroten het aanvalsoppervlak. Zet ze aan als je ze nodig hebt.'
+				. ( array_intersect( [ 'wp-file-manager', 'file-manager-advanced' ], $act ) ? ' Bestandsbeheerders zijn een bekend inbraakdoel.' : '' )
+				. ( in_array( 'wpdebugtoolkit', $act, true ) ? ' Let op: WP Debug Toolkit zet bij deactiveren zijn wp-config-back-up in z\'n geheel terug — controleer wp-config daarna.' : '' ) : '',
 		];
 
 		// --- Frequente cron ---
@@ -243,9 +246,9 @@ class MCM_Load_Check {
 		}
 		$rows[] = [
 			'Cron vaker dan elke 5 minuten',
-			$warn ? 'warn' : ( $list ? 'info' : 'ok' ),
+			$warn ? 'warn' : 'ok',
 			$list ? implode( '; ', $list ) : 'geen',
-			'zo weinig mogelijk',
+			$warn ? 'zo weinig mogelijk' : '—',
 			$list ? ( $warn ? 'Elke cronrun start heel WordPress (op shared hosting met krap geheugen merkbaar). Zet de functie uit in de betreffende plugin als je hem niet gebruikt (bv. de system monitor van MainWP Child, automatische optimalisatie van WPvivid Imgoptim). Let op: events van een uitgeschakelde plugin blijven ingepland tot de plugin ze opruimt. ' : '' )
 				. 'Action Scheduler-wachtrijen (action_scheduler_run_queue*) zijn normaal voor WooCommerce/WP Rocket.'
 				. ( $f['wp_cron_off'] ? ' WP-cron is uitgeschakeld: een systeemcron bepaalt hoe vaak dit echt draait.' : '' ) : '',
@@ -253,12 +256,16 @@ class MCM_Load_Check {
 
 		// --- Gravity Forms op Avada ---
 		if ( $f['is_avada'] && is_array( $f['gf'] ) && in_array( 'gravityforms', $act, true ) && $f['gf']['forms'] <= 2 ) {
+			$unused = 0 === $f['gf']['pages'] && empty( $f['gf']['widget'] );
 			$rows[] = [
-				'Gravity Forms voor ' . $f['gf']['forms'] . ' formulier(en)',
-				'info',
-				$f['gf']['forms'] . ' actief, op ' . $f['gf']['pages'] . ' pagina(\'s)',
-				'Avada Forms overwegen',
-				'Gravity Forms laadt op élke paginaweergave ±320 PHP-bestanden (±10 MB opcache), ook waar geen formulier staat; de reCAPTCHA-add-on laadt Google op elke pagina. Avada Forms zit al in Fusion Builder. Zie skill avada-knowledge sectie 15 voor de aanpak (Element Manager, honeypot, Turnstile, bewaartermijn).',
+				$unused ? 'Gravity Forms lijkt ongebruikt' : 'Gravity Forms voor ' . $f['gf']['forms'] . ' formulier(en)',
+				$unused ? 'warn' : 'info',
+				$f['gf']['forms'] . ' formulier(en) actief, op ' . $f['gf']['pages'] . ' pagina(\'s)' . ( empty( $f['gf']['widget'] ) ? '' : ' + widget' ),
+				$unused ? 'deactiveren' : 'Avada Forms overwegen',
+				'Gravity Forms laadt op élke paginaweergave ±320 PHP-bestanden (±10 MB opcache), ook waar geen formulier staat; de reCAPTCHA-add-on laadt Google op elke pagina. '
+					. ( $unused
+						? 'Er staat geen formulier in pagina\'s, berichten, Avada-layouts of widgets. Staat het alleen nog in een thema-sjabloon (PHP)? Controleer dat, en deactiveer dan Gravity Forms en zijn add-ons. Inzendingen blijven in de database staan.'
+						: 'Avada Forms zit al in Fusion Builder. Bij overstappen: de gebruikte formulier-elementen (ook Honeypot) aanzetten in Avada → Performance → Avada Elements, Turnstile i.p.v. reCAPTCHA, en een bewaartermijn instellen.' ),
 			];
 		}
 

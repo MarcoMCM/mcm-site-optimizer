@@ -45,6 +45,7 @@ MCM Site Optimizer — Changelog
   - Alle teksten in de Performance-kaart worden in de browser ge-escapet (ook omgevingswaarden); "Xel" herkent alleen nog het losse woord (niet "pixel").
   - SPF volgt de echte volgorde: eerste match beslist, alleen "+" telt als toegestaan (-/~/? niet), a/mx met host en /cidr, redirect=, ip6 overgeslagen; exists/ptr/macro's → "niet te bepalen". Getest tegen echte DNS: Sagittarius (a) → ja, vreemd IP → nee, gmail.com (redirect=) → ja/nee.
   - Back-upmappen: tot 3 voorbeelden testen, padsegmenten gecodeerd, een 200 met HTML telt niet als "bereikbaar", "geweigerd" is nooit groen, en een onleesbare submap laat de scan niet crashen.
+  - Na doorklikken in wp-admin: "Gravity Forms lijkt ongebruikt → deactiveren" als er geen formulier in content, Avada-layouts of widgets staat (geen verwijzing meer naar een interne notitie); cron met alleen Action Scheduler-wachtrijen staat op groen; de tekst bij ontwikkeltools noemt alleen wat er actief is; uitleg waarom de hostmail ruimer vraagt dan het minimum op de kaart; actielog toont → i.p.v. \u2192; in de steekproef krijgen formaten die een browser niet toont (tif e.d.) een tegel met de bestandsnaam i.p.v. een kapot plaatje.
   - Getest op de lokale Sagittarius-kopie met Avada én als site zonder Avada (Twenty Twenty-Five, Fusion-plugins uit): alle vier de kaarten zonder één PHP-melding (PHP 8.5, E_ALL).
 
 = 1.8.3 (2026-09-29) =

@@ -731,6 +731,7 @@ jQuery(document).ready(function($) {
 			d.mail.forEach(function(r) { h += row(r); });
 			if (d.host_mail) {
 				h += '<h3 style="margin:16px 0 6px;color:var(--mcm-brown);">Mail voor de hostingpartij</h3>' +
+					'<p class="description" style="margin:0 0 6px;">De mail vraagt bewust ruimer dan het minimum op de kaart (bv. opcache 512 MB i.p.v. ≥ 256 MB): de opcache wordt door alle sites op de server gedeeld, en zo hoef je niet na de volgende update opnieuw te mailen.</p>' +
 					'<textarea id="mcm-server-hostmail" rows="14" style="width:100%;font-family:monospace;font-size:12px;">' + esc(d.host_mail) + '</textarea>' +
 					'<p><button type="button" class="button" id="mcm-server-copy">Kopiëren</button></p>';
 			} else {

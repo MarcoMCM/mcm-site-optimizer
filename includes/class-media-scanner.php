@@ -722,12 +722,14 @@ class MCM_Media_Scanner {
 	/** Steekproef (24 miniaturen) uit een lijst wezen. */
 	private static function sample( array $ids ) {
 		$sample = [];
+		// Formaten die een browser niet toont (tif, bmp, psd…) krijgen een tegel met de naam.
+		$shows = [ 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml', 'image/x-icon', 'image/vnd.microsoft.icon' ];
 		foreach ( array_slice( $ids, 0, 24 ) as $sid ) {
-			$url = wp_get_attachment_image_url( $sid, 'thumbnail' );
-			if ( ! $url ) {
-				$url = wp_get_attachment_image_url( $sid, 'full' );
+			$url = '';
+			if ( in_array( get_post_mime_type( $sid ), $shows, true ) ) {
+				$url = wp_get_attachment_image_url( $sid, 'thumbnail' ) ?: wp_get_attachment_image_url( $sid, 'full' );
 			}
-			$sample[] = [ 'id' => (int) $sid, 'url' => $url ?: '' ];
+			$sample[] = [ 'id' => (int) $sid, 'url' => $url ?: '', 'name' => wp_basename( (string) get_post_meta( $sid, '_wp_attached_file', true ) ) ];
 		}
 		return $sample;
 	}
@@ -1071,7 +1073,9 @@ jQuery(document).ready(function($) {
 			html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;">';
 			for (var i = 0; i < d.sample.length; i++) {
 				if (d.sample[i].url) {
-					html += '<img src="' + esc(d.sample[i].url) + '" title="#' + d.sample[i].id + '" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--mcm-border);border-radius:4px;">';
+					html += '<img src="' + esc(d.sample[i].url) + '" title="#' + esc(d.sample[i].id) + ' ' + esc(d.sample[i].name || '') + '" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--mcm-border);border-radius:4px;">';
+				} else if (d.sample[i].name) {
+					html += '<div title="#' + esc(d.sample[i].id) + ' ' + esc(d.sample[i].name) + '" style="width:64px;height:64px;box-sizing:border-box;padding:4px;border:1px solid var(--mcm-border);border-radius:4px;font-size:10px;line-height:1.2;overflow:hidden;word-break:break-all;background:#f6f7f7;">' + esc(d.sample[i].name) + '</div>';
 				}
 			}
 			html += '</div>';
