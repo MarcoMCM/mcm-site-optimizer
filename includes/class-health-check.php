@@ -97,6 +97,10 @@ class MCM_Health_Check {
 			'label'  => 'Cron-taken',
 			'passed' => $cron['ok'],
 			'detail' => $cron['message'],
+			// Een aandachtspunt, geen storing: de site draait gewoon. Met een
+			// knop om het op te lossen (zie ajax_cron_dubbel in de admin-pagina).
+			'warn'   => ! empty( $cron['warn'] ),
+			'actie'  => $cron['actie'] ?? null,
 		];
 		if ( ! $cron['ok'] ) {
 			$results['all_passed'] = false;
@@ -311,11 +315,15 @@ class MCM_Health_Check {
 	/**
 	 * Cron-taken controleren op drie signalen:
 	 *  1. taken die ver over tijd zijn  → cron draait niet
-	 *  2. dezelfde hook meerdere keren ingepland → dubbele planning
+	 *  2. dezelfde taak meerdere keren ingepland → dubbele planning
 	 *  3. buitensporig veel taken → opeenstapeling
 	 *
 	 * Aanleiding: een beeldoptimalisatie-plugin die maandenlang elke twee
 	 * minuten dezelfde (niet-bestaande) afbeelding "optimaliseerde".
+	 *
+	 * Een dubbele planning is een aandachtspunt ('warn'), geen storing: de
+	 * site draait gewoon. De admin-pagina toont er een knop bij die het
+	 * opruimt (cron_dubbel_opruimen()).
 	 */
 	public static function check_cron() {
 		$crons = _get_cron_array();
@@ -325,7 +333,6 @@ class MCM_Health_Check {
 
 		$nu        = time();
 		$te_laat   = [];
-		$per_hook  = [];
 		$totaal    = 0;
 		$marge     = (int) apply_filters( 'mcm_optimizer_cron_late_seconds', HOUR_IN_SECONDS );
 
@@ -334,9 +341,7 @@ class MCM_Health_Check {
 				continue;
 			}
 			foreach ( $hooks as $hook => $events ) {
-				$aantal            = is_array( $events ) ? count( $events ) : 1;
-				$totaal           += $aantal;
-				$per_hook[ $hook ] = ( $per_hook[ $hook ] ?? 0 ) + $aantal;
+				$totaal += is_array( $events ) ? count( $events ) : 1;
 
 				if ( $ts < ( $nu - $marge ) ) {
 					$te_laat[ $hook ] = $nu - (int) $ts;
@@ -357,25 +362,29 @@ class MCM_Health_Check {
 			);
 		}
 
-		$dubbel = array_filter( $per_hook, function ( $n ) { return $n > 1; } );
-		if ( ! empty( $dubbel ) ) {
-			arsort( $dubbel );
-			$namen = [];
-			foreach ( array_slice( $dubbel, 0, 3, true ) as $h => $n ) {
-				$namen[] = $h . ' (' . $n . 'x)';
-			}
-			$problemen[] = 'dubbel ingepland: ' . implode( ', ', $namen );
-		}
-
 		$max_taken = (int) apply_filters( 'mcm_optimizer_max_cron_events', 150 );
 		if ( $totaal > $max_taken ) {
 			$problemen[] = sprintf( '%d taken in totaal (drempel %d)', $totaal, $max_taken );
 		}
 
+		$dubbel = self::cron_dubbel();
+		$actie  = $dubbel ? [ 'type' => 'cron_dubbel', 'label' => 'Ruim op' ] : null;
+
 		if ( ! empty( $problemen ) ) {
 			return [
 				'ok'      => false,
-				'message' => ucfirst( implode( '; ', $problemen ) ) . '.',
+				'message' => ucfirst( implode( '; ', $problemen ) ) . '.'
+					. ( $dubbel ? ' ' . self::cron_dubbel_tekst( $dubbel ) : '' ),
+				'actie'   => $actie,
+			];
+		}
+
+		if ( $dubbel ) {
+			return [
+				'ok'      => true,
+				'warn'    => true,
+				'message' => self::cron_dubbel_tekst( $dubbel ),
+				'actie'   => $actie,
 			];
 		}
 
@@ -383,6 +392,225 @@ class MCM_Health_Check {
 			'ok'      => true,
 			'message' => sprintf( '%d cron-taken, niets over tijd. OK.', $totaal ),
 		];
+	}
+
+	/**
+	 * Herhalende cron-taken die meer dan één keer zijn ingepland, met precies
+	 * dezelfde argumenten en hetzelfde interval.
+	 *
+	 * wp_schedule_event() controleert dat zelf niet; een plugin moet eerst
+	 * wp_next_scheduled() vragen. Gaat dat een keer mis (oude versie, twee
+	 * verzoeken tegelijk), dan blijft de taak voortaan te vaak draaien: elke
+	 * kopie plant zichzelf na afloop opnieuw in. Gezien op powair.nl: de
+	 * dagelijkse plugin- en themacheck van MainWP Child stonden er elk twee
+	 * keer in, twee minuten na elkaar.
+	 *
+	 * Telt bewust niet mee:
+	 * - dezelfde hook met andere argumenten: dat zijn verschillende taken;
+	 * - eenmalige taken op verschillende tijden: die kunnen zo bedoeld zijn.
+	 *
+	 * @return array<int,array{hook:string,args:array,schedule:string,tijden:int[]}>
+	 */
+	public static function cron_dubbel() {
+		$crons = _get_cron_array();
+		if ( ! is_array( $crons ) ) {
+			return [];
+		}
+
+		$groepen = [];
+		foreach ( $crons as $ts => $hooks ) {
+			if ( ! is_array( $hooks ) ) {
+				continue;
+			}
+			foreach ( $hooks as $hook => $events ) {
+				if ( ! is_array( $events ) ) {
+					continue;
+				}
+				// De sleutel is md5(serialize(args)): gelijk = dezelfde argumenten.
+				foreach ( $events as $sleutel => $event ) {
+					if ( empty( $event['schedule'] ) ) {
+						continue;
+					}
+					$id = $hook . '|' . $sleutel . '|' . $event['schedule'];
+					if ( ! isset( $groepen[ $id ] ) ) {
+						$groepen[ $id ] = [
+							'hook'     => (string) $hook,
+							'args'     => (array) ( $event['args'] ?? [] ),
+							'schedule' => (string) $event['schedule'],
+							'tijden'   => [],
+						];
+					}
+					$groepen[ $id ]['tijden'][] = (int) $ts;
+				}
+			}
+		}
+
+		$dubbel = [];
+		foreach ( $groepen as $groep ) {
+			if ( count( $groep['tijden'] ) > 1 ) {
+				sort( $groep['tijden'] );
+				$dubbel[] = $groep;
+			}
+		}
+
+		return $dubbel;
+	}
+
+	/**
+	 * Haal de extra kopieën weg. Per taak blijft de eerstvolgende staan, dus
+	 * de taak zelf blijft gewoon draaien, alleen niet meer dubbel.
+	 *
+	 * @return array{deleted:int,hooks:string[]}
+	 */
+	public static function cron_dubbel_opruimen() {
+		$weg   = 0;
+		$hooks = [];
+
+		foreach ( self::cron_dubbel() as $groep ) {
+			foreach ( array_slice( $groep['tijden'], 1 ) as $ts ) {
+				if ( true === wp_unschedule_event( $ts, $groep['hook'], $groep['args'] ) ) {
+					$weg++;
+					$hooks[ $groep['hook'] ] = true;
+				}
+			}
+		}
+
+		return [
+			'deleted' => $weg,
+			'hooks'   => array_keys( $hooks ),
+		];
+	}
+
+	/**
+	 * Uitleg bij dubbel ingeplande taken: welke, van welke plugin, wat het
+	 * gevolg is en wat je eraan doet.
+	 */
+	protected static function cron_dubbel_tekst( array $dubbel ) {
+		$bronnen = [];
+		foreach ( $dubbel as $groep ) {
+			$bron = self::hook_bron( $groep['hook'] );
+			if ( '' !== $bron ) {
+				$bronnen[ $bron ] = true;
+			}
+		}
+		$van = $bronnen ? ' van ' . implode( ' en ', array_keys( $bronnen ) ) : '';
+
+		if ( 1 === count( $dubbel ) ) {
+			$groep  = $dubbel[0];
+			$n      = count( $groep['tijden'] );
+			$per    = [ 'hourly' => 'uur', 'daily' => 'dag', 'weekly' => 'week' ];
+			$gevolg = isset( $per[ $groep['schedule'] ] )
+				? sprintf( '%d× per %s in plaats van 1×', $n, $per[ $groep['schedule'] ] )
+				: sprintf( '%d× zo vaak als bedoeld', $n );
+
+			return sprintf(
+				'De taak %s%s staat %d× ingepland en draait daardoor %s. Onschuldig, maar onnodig. Met "Ruim op" blijft er één over.',
+				$groep['hook'],
+				$van,
+				$n,
+				$gevolg
+			);
+		}
+
+		return sprintf(
+			'%d taken%s staan dubbel ingepland (%s) en draaien daardoor vaker dan bedoeld. Onschuldig, maar onnodig. Met "Ruim op" blijft er van elke taak één over.',
+			count( $dubbel ),
+			$van,
+			implode( ', ', array_map( function ( $groep ) {
+				return $groep['hook'] . ' ' . count( $groep['tijden'] ) . '×';
+			}, $dubbel ) )
+		);
+	}
+
+	/**
+	 * Van welke plugin is deze hook? Eerst via het bestand van de callbacks
+	 * die er nu aan hangen. Veel plugins hangen hun cron-callbacks alleen op
+	 * tijdens een cron-run (MainWP Child bijvoorbeeld); dan valt hij terug op
+	 * de naam: begint de hook met de mapnaam van een geïnstalleerde plugin?
+	 * Leeg als het niet te zeggen is.
+	 */
+	protected static function hook_bron( $hook ) {
+		global $wp_filter;
+
+		if ( ! empty( $wp_filter[ $hook ] ) && $wp_filter[ $hook ] instanceof WP_Hook ) {
+			$bron = self::hook_bron_uit_callbacks( $wp_filter[ $hook ] );
+			if ( '' !== $bron ) {
+				return $bron;
+			}
+		}
+
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$beste = '';
+		foreach ( array_keys( get_plugins() ) as $bestand ) {
+			$map = dirname( $bestand );
+			if ( '.' === $map ) {
+				continue;
+			}
+			// mainwp-child → mainwp_child; te korte namen ("wp") matchen alles.
+			$prefix = str_replace( '-', '_', strtolower( $map ) );
+			if ( strlen( $prefix ) < 4 || strlen( $prefix ) <= strlen( $beste ) ) {
+				continue;
+			}
+			if ( $hook === $prefix || 0 === strpos( $hook, $prefix . '_' ) ) {
+				$beste = $map;
+			}
+		}
+
+		return '' !== $beste ? self::plugin_naam( $beste ) : '';
+	}
+
+	/**
+	 * Plugin-naam via het bestand waarin een callback van deze hook staat.
+	 */
+	protected static function hook_bron_uit_callbacks( WP_Hook $wp_hook ) {
+		$plugin_dir = trailingslashit( wp_normalize_path( WP_PLUGIN_DIR ) );
+
+		foreach ( $wp_hook->callbacks as $callbacks ) {
+			foreach ( $callbacks as $callback ) {
+				$functie = $callback['function'] ?? null;
+				try {
+					if ( is_array( $functie ) ) {
+						$ref = new ReflectionMethod( $functie[0], $functie[1] );
+					} elseif ( is_string( $functie ) && false !== strpos( $functie, '::' ) ) {
+						$ref = new ReflectionMethod( $functie );
+					} else {
+						$ref = new ReflectionFunction( $functie );
+					}
+				} catch ( Throwable $e ) {
+					continue;
+				}
+
+				$bestand = wp_normalize_path( (string) $ref->getFileName() );
+				if ( 0 !== strpos( $bestand, $plugin_dir ) ) {
+					continue;
+				}
+
+				$map = strtok( substr( $bestand, strlen( $plugin_dir ) ), '/' );
+				return self::plugin_naam( $map );
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Leesbare naam van de plugin in deze map, anders de mapnaam.
+	 */
+	protected static function plugin_naam( $map ) {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		foreach ( get_plugins( '/' . $map ) as $data ) {
+			if ( ! empty( $data['Name'] ) ) {
+				return $data['Name'];
+			}
+		}
+
+		return $map;
 	}
 
 	/**
