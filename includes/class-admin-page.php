@@ -431,7 +431,7 @@ class MCM_Optimizer_Admin_Page {
 									}
 									echo esc_html( $tekst );
 								} else {
-									echo esc_html( wp_json_encode( $entry['result'] ) );
+									echo esc_html( wp_json_encode( $entry['result'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
 								}
 								?>
 							</td>
