@@ -1,5 +1,19 @@
 MCM Site Optimizer — Changelog
 
+= 1.9.0 (2026-10-04) =
+* Nieuw: Avada ↔ WP Rocket-regels in de Performance-kaart (class-avada-rocket.php). Aanleiding: pensioenfonds-sagittarius.nl (3/4 okt 2026) — lokaal nagemeten. WP Rocket "Remove Unused CSS" definieert FUSION_DISABLE_COMPILERS, waardoor Avada ±750 kB CSS inline in elke pagina zet en 50–60 losse JS-bestanden laadt. Geteste taakverdeling: WP Rocket = paginacache + JS defer/delay + lazy load; Avada = CSS naar bestand + JS-compiler. Resultaat: HTML 841–883 kB → 86–128 kB, gecachete pagina 0,01 s.
+  - avada_compilers (aanbevolen): CSS naar bestand + JS-compiler; geweigerd zolang RUCSS aan staat.
+  - avada_rucss_off (aanbevolen): RUCSS uit op Avada.
+  - avada_minify_off (aanbevolen): WP Rocket CSS/JS verkleinen + combineren uit — Avada levert al .min-bundels. CORRIGEERT het oude advies "minify aan", dat op Avada nu niet meer getoond wordt.
+  - avada_delay_exclusions (veilig): jQuery + uploads/fusion-scripts/ uitzonderen van Delay JS. Zonder bleven Avada-elementen met een in-animatie (de homepage-header) onzichtbaar tot de bezoeker bewoog — ook al vóór deze wijzigingen, zolang WP Rocket aan stond.
+  - avada_lazyload (veilig): precies één lazy-loader (WP Rocket aan, Avada none).
+  - avada_conflicts (aanbevolen): Avada Critical CSS / jQuery-in-footer uit naast WP Rocket CSS-levering / defer / delay.
+  - avada_revisions (veilig): Avada post_revisions_limit op 5 (standaard onbeperkt).
+  - avada_webp (aanbevolen): nieuwe uploads als WebP via Avada, alleen als de server WebP kan (wp_image_editor_supports). Geen bulk-omzetting.
+  - rocket_config (veilig): WP Rocket-config voor het huidige domein ontbreekt (na verhuizen/importeren cachet WP Rocket dan niets).
+* Nieuw: Element Manager-controle. Zoekt [fusion_…]-shortcodes in de builder-posttypes (zoals Avada's eigen element-scan) en koppelt ze via de poorten in de element-bestanden (fusion_is_element_enabled) aan het element. Staat een gebruikt element uit → rood + knop die alléén die elementen aanzet. Op Sagittarius stonden Select/Honeypot/Turnstile uit: losse shortcode-tekst, en met een uitgeschakelde honeypot faalt elke inzending (server-side check sinds Fusion Builder 3.16.2). Plus: dubbele regels in de lijst ontdubbelen (Sagittarius: 160 regels, 48 uniek).
+* Nieuw: elke toepassing in de Performance-kaart wordt per sub-instelling vastgelegd (optie mcm_perf_undo, laatste 15) en is terug te zetten met "Ongedaan maken". Vóór een toepassing wordt een health-check-momentopname gemaakt (hooguit één per uur). Na toepassen/terugzetten: Avada-caches + WP Rocket-cache/minify geleegd en opnieuw geanalyseerd.
+
 = 1.8.3 (2026-09-29) =
 * Veiliger: "Alles Opschonen" neemt alleen nog modules mee die zonder risico op een live site (webshop) kunnen: verlopen transients, revisies, auto-drafts, spam en prullenbak-reacties, wees-meta en oude Action Scheduler-taken. Actieve transients, dubbele postmeta en de prullenbak (berichten/pagina's) staan nu op "Let op" en gaan alleen nog los, met een waarschuwing op de kaart en in de bevestiging. Aanleiding: één klik wiste alle actieve transients van een live site; bij susenso.nl ging eerder data van een lopend proces verloren door hetzelfde. De prullenbak stond in de scanner zelfs als "Veilig".
 * De lijst staat op één plek (MCM_Database_Cleaner::bulk_modules()) en wordt ook op de server gecontroleerd: een bulk-verzoek voor een module buiten die lijst wordt geweigerd.
