@@ -41,6 +41,7 @@ require_once MCM_OPTIMIZER_DIR . 'includes/class-media-scanner.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-avada-rocket.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-performance.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-server-check.php';
+require_once MCM_OPTIMIZER_DIR . 'includes/class-load-check.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-image-optim.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-nepaccount-scanner.php';
 require_once MCM_OPTIMIZER_DIR . 'includes/class-log-monitor.php';
@@ -71,6 +72,7 @@ final class MCM_Site_Optimizer {
 			new MCM_Media_Scanner();
 			new MCM_Performance();
 			new MCM_Server_Check();
+			new MCM_Load_Check();
 			new MCM_Image_Optim();
 			new MCM_Nepaccount_Scanner();
 		}
