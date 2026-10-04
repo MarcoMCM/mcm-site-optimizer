@@ -41,8 +41,9 @@ class MCM_Performance {
 		$active     = (array) get_option( 'active_plugins', [] );
 		$active_str = strtolower( implode( '|', $active ) );
 
-		$is_xel = ( false !== strpos( $active_str, 'xel' ) )
-			|| ( false !== stripos( (string) gethostname(), 'xel' ) );
+		// "xel" als los woord (map/slug of hostnaam-deel), niet als stukje van bv. "pixel".
+		$is_xel = (bool) preg_match( '~(^|[|/_.-])xel([|/_.-]|$)~', $active_str )
+			|| (bool) preg_match( '~(^|[.-])xel([.-]|$)~i', (string) gethostname() );
 
 		$varnish = ( false !== strpos( $active_str, 'varnish' ) );
 
@@ -143,6 +144,10 @@ class MCM_Performance {
 		}
 
 		$recs = array_merge( $recs, self::rocket_recommendations( $s, $env, $is_avada ) );
+		$cfg  = MCM_Avada_Rocket::rocket_config_rec();
+		if ( $cfg ) {
+			$recs[] = $cfg;
+		}
 		return array_merge( $recs, $avada_recs );
 	}
 
@@ -237,7 +242,7 @@ class MCM_Performance {
 			'current' => $cdn_on ? 'aan' : ( $cdn_names ? 'geconfigureerd, uit' : 'niet ingesteld' ),
 			'advised' => 'verifiëren',
 			'detail' => ( ! $cdn_on && $cdn_names )
-				? 'Er is een CDN-CNAME ingesteld (' . esc_html( implode( ', ', $cdn_names ) ) . ') maar de CDN staat uit. Verifieer eerst of dat endpoint werkt voor je het aanzet.'
+				? 'Er is een CDN-CNAME ingesteld (' . implode( ', ', $cdn_names ) . ') maar de CDN staat uit. Verifieer eerst of dat endpoint werkt voor je het aanzet.'
 				: 'Geen actie nodig of geen CDN ingesteld.',
 		];
 
@@ -333,6 +338,10 @@ class MCM_Performance {
 			MCM_Health_Check::save_pre_snapshot();
 		}
 
+		if ( 0 === strpos( $key, 'avada_' ) && ! MCM_Avada_Rocket::is_avada() ) {
+			wp_send_json_error( 'Deze site gebruikt Avada niet.' );
+		}
+
 		$cs = new MCM_Perf_Changeset();
 		if ( in_array( $key, MCM_Avada_Rocket::KEYS, true ) ) {
 			$res = MCM_Avada_Rocket::apply( $key, $cs );
@@ -392,14 +401,14 @@ class MCM_Performance {
 			if ( '' === $id || strtolower( (string) ( $e['id'] ?? '' ) ) !== $id ) {
 				continue;
 			}
-			$options = MCM_Perf_Changeset::revert( (array) $e['changes'] );
-			self::clear_caches( $options );
+			$result = MCM_Perf_Changeset::revert( (array) $e['changes'] );
+			self::clear_caches( $result['options'] );
 			unset( $undo[ $i ] );
 			update_option( self::UNDO_OPT, array_values( $undo ), false );
 			if ( class_exists( 'MCM_Database_Cleaner' ) && method_exists( 'MCM_Database_Cleaner', 'log_action' ) ) {
-				MCM_Database_Cleaner::log_action( 'performance:undo:' . ( $e['key'] ?? '' ), [ 'reverted' => count( (array) $e['changes'] ) ] );
+				MCM_Database_Cleaner::log_action( 'performance:undo:' . ( $e['key'] ?? '' ), [ 'reverted' => $result['reverted'], 'skipped' => $result['skipped'] ] );
 			}
-			wp_send_json_success( [ 'undo' => self::undo_list() ] );
+			wp_send_json_success( [ 'undo' => self::undo_list(), 'reverted' => $result['reverted'], 'skipped' => $result['skipped'] ] );
 		}
 		wp_send_json_error( 'Deze wijziging is niet (meer) terug te zetten.' );
 	}
@@ -453,10 +462,12 @@ jQuery(document).ready(function($) {
 		'risico':    { label: 'Risico',    color: '#AE432B' }
 	};
 
+	function esc(s) { return $('<div/>').text(s === null || typeof s === 'undefined' ? '' : String(s)).html(); }
+
 	function envRow(label, value, good) {
 		var color = good === true ? '#1a5c5e' : (good === false ? '#AE432B' : '#6b5d52');
 		return '<span style="display:inline-block;margin:0 14px 6px 0;font-size:13px;">' +
-			'<strong>' + label + ':</strong> <span style="color:' + color + ';">' + value + '</span></span>';
+			'<strong>' + esc(label) + ':</strong> <span style="color:' + color + ';">' + esc(value) + '</span></span>';
 	}
 
 	$('#mcm-perf-scan').on('click', function() {
@@ -476,7 +487,7 @@ jQuery(document).ready(function($) {
 
 			// Detectie.
 			html += '<div class="mcm-opt-db-size">';
-			html += envRow('Host', e.host, e.is_xel ? null : null);
+			html += envRow('Host', e.host, null);
 			html += envRow('Varnish', e.varnish ? 'ja' : 'nee', null);
 			html += envRow('Thema', e.theme + (e.is_avada ? ' (Avada)' : ''), null);
 			html += envRow('WP Rocket', e.wp_rocket ? e.wp_rocket : 'niet actief', !!e.wp_rocket);
@@ -493,7 +504,7 @@ jQuery(document).ready(function($) {
 
 			if (e.optimizers.length > 1) {
 				html += '<div class="mcm-opt-alert mcm-opt-alert-warning"><span class="dashicons dashicons-warning"></span> ' +
-					'Meerdere image-optimizers actief (' + e.optimizers.join(', ') + ') — kies er één om conflicten te voorkomen.</div>';
+					'Meerdere image-optimizers actief (' + esc(e.optimizers.join(', ')) + ') — kies er één om conflicten te voorkomen.</div>';
 			}
 
 			// Aanbevelingen per niveau.
@@ -504,23 +515,23 @@ jQuery(document).ready(function($) {
 				html += '<h3 style="margin:16px 0 6px;color:var(--mcm-brown);">' +
 					'<span class="mcm-opt-risk-badge" style="background:' + t.color + ';">' + t.label + '</span></h3>';
 				items.forEach(function(r) {
-					html += '<div class="mcm-perf-rec" data-key="' + r.key + '">';
+					html += '<div class="mcm-perf-rec" data-key="' + esc(r.key) + '">';
 					html += '<div style="display:flex;align-items:center;gap:8px;">';
 					html += r.ok
 						? '<span class="dashicons dashicons-yes-alt" style="color:#1a5c5e;"></span>'
 						: '<span class="dashicons dashicons-info" style="color:' + t.color + ';"></span>';
-					html += '<strong>' + r.label + '</strong>';
-					html += '<span style="color:#6b5d52;font-size:12px;">(' + r.current + ' → ' + r.advised + ')</span>';
+					html += '<strong>' + esc(r.label) + '</strong>';
+					html += '<span style="color:#6b5d52;font-size:12px;">(' + esc(r.current) + ' → ' + esc(r.advised) + ')</span>';
 					var canApply = (tier === 'veilig' || tier === 'aanbevolen');
 					if (!r.ok && canApply) {
-						html += '<button class="button mcm-opt-btn-clean mcm-perf-apply" data-key="' + r.key + '" style="margin-left:auto;">Toepassen</button>';
+						html += '<button class="button mcm-opt-btn-clean mcm-perf-apply" data-key="' + esc(r.key) + '" style="margin-left:auto;">Toepassen</button>';
 					} else if (r.ok) {
 						html += '<span class="mcm-opt-clean-ok" style="margin-left:auto;">✓ in orde</span>';
 					} else {
 						html += '<span class="mcm-opt-risk-badge" style="background:' + t.color + ';margin-left:auto;">Handmatig</span>';
 					}
 					html += '</div>';
-					html += '<div style="font-size:12px;color:#6b5d52;margin:4px 0 0 26px;">' + r.detail + '</div>';
+					html += '<div style="font-size:12px;color:#6b5d52;margin:4px 0 0 26px;">' + esc(r.detail) + '</div>';
 					html += '</div>';
 				});
 			});
@@ -535,8 +546,6 @@ jQuery(document).ready(function($) {
 		});
 	});
 
-	function esc(s) { return $('<div/>').text(String(s)).html(); }
-
 	function renderUndo(list) {
 		if (!list.length) { $('#mcm-perf-undo').html(''); return; }
 		var h = '<h3 style="margin:18px 0 6px;color:var(--mcm-brown);">Recent toegepast</h3>';
@@ -545,7 +554,7 @@ jQuery(document).ready(function($) {
 			h += '<div class="mcm-perf-rec" style="display:flex;align-items:center;gap:8px;">' +
 				'<span class="dashicons dashicons-backup" style="color:#6b5d52;"></span>' +
 				'<strong>' + esc(u.label) + '</strong>' +
-				'<span style="color:#6b5d52;font-size:12px;">' + esc(u.time) + ' · ' + u.count + ' instelling(en)</span>' +
+				'<span style="color:#6b5d52;font-size:12px;">' + esc(u.time) + ' · ' + esc(u.count) + ' instelling(en)</span>' +
 				'<button class="button mcm-perf-undo" data-id="' + esc(u.id) + '" style="margin-left:auto;">Ongedaan maken</button></div>';
 		});
 		$('#mcm-perf-undo').html(h);
@@ -574,6 +583,9 @@ jQuery(document).ready(function($) {
 		btn.prop('disabled', true).text('Bezig...');
 		$.post(mcmOptimizer.ajaxUrl, { action: 'mcm_perf_undo', nonce: mcmOptimizer.nonce, id: btn.data('id') }, function(res) {
 			if (res.success) {
+				if (res.data.skipped && res.data.skipped.length) {
+					alert('Teruggezet: ' + res.data.reverted + ' instelling(en).\n\nNiet teruggezet, want sindsdien opnieuw gewijzigd (door jou of een latere toepassing):\n' + res.data.skipped.join('\n'));
+				}
 				$('#mcm-perf-scan').trigger('click');
 			} else {
 				btn.prop('disabled', false).text('Ongedaan maken');

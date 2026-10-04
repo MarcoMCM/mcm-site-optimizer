@@ -217,7 +217,10 @@ class MCM_Server_Check {
 
 	/**
 	 * Valt een van de IP's van de webserver binnen de SPF van het domein?
-	 * Ondersteunt ip4, a, a:host, mx en include (max. 10 lookups, diepte 4).
+	 * Volgt de SPF-volgorde: het eerste mechanisme dat matcht beslist, en alleen
+	 * "+" (pass) telt als toegestaan. Ondersteunt ip4, ip6, a, mx (met host en
+	 * /cidr), include, all en redirect=. exists, ptr en macro's (%{…}) zijn niet
+	 * na te rekenen → null. Max. 10 DNS-lookups, diepte 4.
 	 *
 	 * @return bool|null true/false, of null als het niet te bepalen was.
 	 */
@@ -229,38 +232,102 @@ class MCM_Server_Check {
 		if ( '' === $spf ) {
 			return null;
 		}
-		$unknown = false;
-		foreach ( preg_split( '/\s+/', $spf ) as $tok ) {
-			$tok = ltrim( strtolower( $tok ), '+' );
-			if ( 0 === strpos( $tok, 'ip4:' ) ) {
+		$unknown  = false; // een eerder mechanisme was niet na te rekenen…
+		$unk_neg  = false; // …en had een -/~/? kwalificatie (had dus kunnen weigeren).
+		$redirect = '';
+		foreach ( preg_split( '/\s+/', strtolower( $spf ) ) as $tok ) {
+			if ( '' === $tok || 'v=spf1' === $tok ) {
+				continue;
+			}
+			if ( 0 === strpos( $tok, 'redirect=' ) ) {
+				$redirect = substr( $tok, 9 );
+				continue;
+			}
+			if ( false !== strpos( $tok, '=' ) ) {
+				continue; // andere modifier (exp=) — geen invloed.
+			}
+			$q = '+';
+			if ( false !== strpos( '+-~?', $tok[0] ) ) {
+				$q   = $tok[0];
+				$tok = substr( $tok, 1 );
+			}
+			if ( false !== strpos( $tok, '%{' ) ) {
+				$unknown = true; // macro: niet na te rekenen.
+				$unk_neg = $unk_neg || '+' !== $q;
+				continue;
+			}
+
+			$match = false;
+			if ( 'all' === $tok ) {
+				// Alles hierna telt niet meer; redirect= wordt dan genegeerd.
+				return self::spf_result( $q, $unknown, $unk_neg );
+			} elseif ( 0 === strpos( $tok, 'ip4:' ) ) {
 				foreach ( $ips as $ip ) {
 					if ( self::ip_in_cidr( $ip, substr( $tok, 4 ) ) ) {
-						return true;
+						$match = true;
+						break;
 					}
 				}
-			} elseif ( 'a' === $tok || 0 === strpos( $tok, 'a:' ) ) {
+			} elseif ( 0 === strpos( $tok, 'ip6:' ) ) {
+				continue; // de webserver-IP's zijn IPv4.
+			} elseif ( preg_match( '#^(a|mx)(?::([^/]+))?(?:/(\d{1,2}))?(?://\d+)?$#', $tok, $mm ) ) {
 				$lookups++;
-				$host = 'a' === $tok ? $domain : substr( $tok, 2 );
-				if ( array_intersect( $ips, self::a_records( preg_replace( '#/.*$#', '', $host ) ) ) ) {
-					return true;
+				if ( $lookups > 10 ) {
+					return null;
 				}
-			} elseif ( 'mx' === $tok ) {
-				$lookups++;
-				foreach ( (array) @dns_get_record( $domain, DNS_MX ) as $r ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
-					if ( ! empty( $r['target'] ) && array_intersect( $ips, self::a_records( $r['target'] ) ) ) {
-						return true;
+				$host  = ( isset( $mm[2] ) && '' !== $mm[2] ) ? $mm[2] : $domain;
+				$bits  = ( isset( $mm[3] ) && '' !== $mm[3] ) ? (int) $mm[3] : 32;
+				$addrs = [];
+				if ( 'a' === $mm[1] ) {
+					$addrs = self::a_records( $host );
+				} else {
+					foreach ( (array) @dns_get_record( $host, DNS_MX ) as $r ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+						if ( ! empty( $r['target'] ) ) {
+							$addrs = array_merge( $addrs, self::a_records( $r['target'] ) );
+						}
+					}
+				}
+				foreach ( $addrs as $addr ) {
+					foreach ( $ips as $ip ) {
+						if ( self::ip_in_cidr( $ip, $addr . '/' . $bits ) ) {
+							$match = true;
+							break 2;
+						}
 					}
 				}
 			} elseif ( 0 === strpos( $tok, 'include:' ) ) {
 				$lookups++;
 				$res = self::spf_covers( substr( $tok, 8 ), $ips, $depth + 1, $lookups );
-				if ( true === $res ) {
-					return true;
-				}
 				if ( null === $res ) {
 					$unknown = true;
+					$unk_neg = $unk_neg || '+' !== $q;
+					continue;
 				}
+				$match = $res; // include matcht alleen bij een pass in het andere record.
+			} else {
+				// exists:, ptr of iets onbekends: we weten niet of dit matcht.
+				$unknown = true;
+				$unk_neg = $unk_neg || '+' !== $q;
+				continue;
 			}
+
+			if ( $match ) {
+				return self::spf_result( $q, $unknown, $unk_neg );
+			}
+		}
+
+		if ( '' !== $redirect ) {
+			$lookups++;
+			$res = self::spf_covers( $redirect, $ips, $depth + 1, $lookups );
+			return ( null === $res || ( false === $res && $unknown ) ) ? null : $res;
+		}
+		return $unknown ? null : false;
+	}
+
+	/** Uitkomst bij een match, rekening houdend met eerdere onbekende mechanismen. */
+	private static function spf_result( $q, $unknown, $unk_neg ) {
+		if ( '+' === $q ) {
+			return $unk_neg ? null : true;
 		}
 		return $unknown ? null : false;
 	}

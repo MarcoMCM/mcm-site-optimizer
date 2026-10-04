@@ -23,7 +23,7 @@ class MCM_Media_Scanner {
 	const TRASH_META = '_mcm_media_trashed';
 
 	/** Aantal items per AJAX-batch. */
-	const BATCH = 40;
+	const BATCH = 20;
 
 	public function __construct() {
 		add_action( 'wp_ajax_mcm_media_scan',    [ $this, 'ajax_scan' ] );
@@ -103,10 +103,15 @@ class MCM_Media_Scanner {
 		// hij nu als ongebruikt. De scanner gooit hem in de prullenbak (niet
 		// weg), dus dat is terug te draaien. Wil je revisies tóch meenemen:
 		// add_filter( 'mcm_optimizer_scan_revisions', '__return_true' );
-		$where = "( post_content LIKE '%wp-image-%' OR post_content LIKE '%/uploads/%' )";
+		// Zoeken op de NAAM van de uploadmap zonder slashes: page builders slaan
+		// URL's JSON-ge-escapet op (https:\/\/…\/uploads\/…), en een site kan een
+		// eigen uploadpad hebben (UPLOADS-constante). Het eigenlijke matchen
+		// gebeurt daarna in collect_upload_urls().
+		$like_seg  = '%' . $wpdb->esc_like( self::upload_segment() ) . '%';
+		$type_skip = '';
 		if ( ! apply_filters( 'mcm_optimizer_scan_revisions', false ) ) {
-			$where .= " AND post_type NOT IN ( 'revision', 'customize_changeset', 'oembed_cache' )
-			            AND post_status NOT IN ( 'auto-draft', 'trash' )";
+			$type_skip = " AND post_type NOT IN ( 'revision', 'customize_changeset', 'oembed_cache' )
+			               AND post_status NOT IN ( 'auto-draft', 'trash' )";
 		}
 
 		$batch   = max( 20, (int) apply_filters( 'mcm_optimizer_scan_batch_size', 200 ) );
@@ -116,8 +121,10 @@ class MCM_Media_Scanner {
 			$rijen = $wpdb->get_results(
 				$wpdb->prepare(
 					"SELECT ID, post_content FROM {$wpdb->posts}
-					 WHERE {$where} AND ID > %d
+					 WHERE ( post_content LIKE %s OR post_content LIKE %s ) {$type_skip} AND ID > %d
 					 ORDER BY ID ASC LIMIT %d",
+					'%wp-image-%',
+					$like_seg,
 					$laatste,
 					$batch
 				)
@@ -131,7 +138,9 @@ class MCM_Media_Scanner {
 					$ids[ (int) $x ] = 1;
 				}
 			}
-			if ( preg_match_all( '/(?:image_id|attachment_id|ids)=["\']?([0-9|,\s]+)/', $c, $m ) ) {
+			// Bijlage-ID's in shortcode-attributen (Avada image_id, galerijen,
+			// WPBakery image="123" / images="1,2"). Alleen numerieke waarden.
+			if ( preg_match_all( '/\b(?:image_id|attachment_id|ids|image|images|img|bg_image|background_image_id)=["\']?(\d[0-9|,\s]*)/', $c, $m ) ) {
 				foreach ( $m[1] as $list ) {
 					foreach ( preg_split( '/[|,\s]+/', $list ) as $x ) {
 						$x = (int) $x;
@@ -153,10 +162,50 @@ class MCM_Media_Scanner {
 		// andere plugins dat een /uploads/-URL of een Avada-mediaveld (url + id)
 		// bevat. Aanleiding: op pensioenfonds-sagittarius.nl stond de favicon
 		// alleen in fusion_options — de scanner zette hem bij de wezen.
-		$skip_opts = "option_name NOT LIKE '\\_transient%' AND option_name NOT LIKE '\\_site\\_transient%'
-			AND option_name NOT LIKE 'wpvivid%' AND option_name NOT LIKE 'mcm\\_%'";
-		foreach ( $wpdb->get_col( "SELECT option_value FROM {$wpdb->options} WHERE option_value LIKE '%/uploads/%' AND {$skip_opts}" ) as $v ) { // phpcs:ignore WordPress.DB.PreparedSQL
-			self::walk_value( maybe_unserialize( $v ), $ids, $paths, $bases );
+		// In porties op option_id: optie-blobs van andere plugins kunnen groot zijn.
+		$laatste = 0;
+		do {
+			$rijen = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT option_id, option_value FROM {$wpdb->options}
+					 WHERE option_id > %d AND option_value LIKE %s
+					   AND option_name NOT LIKE %s AND option_name NOT LIKE %s
+					   AND option_name NOT LIKE %s AND option_name NOT LIKE %s
+					 ORDER BY option_id ASC LIMIT %d",
+					$laatste,
+					$like_seg,
+					$wpdb->esc_like( '_transient' ) . '%',
+					$wpdb->esc_like( '_site_transient' ) . '%',
+					$wpdb->esc_like( 'wpvivid' ) . '%',
+					$wpdb->esc_like( 'mcm_' ) . '%',
+					$batch
+				)
+			);
+			foreach ( $rijen as $rij ) {
+				$laatste = (int) $rij->option_id;
+				self::walk_value( maybe_unserialize( $rij->option_value ), $ids, $paths, $bases );
+			}
+			$aantal = count( $rijen );
+			unset( $rijen );
+		} while ( $aantal === $batch );
+
+		// Term- en gebruikersmeta: categorie-afbeeldingen (WooCommerce
+		// thumbnail_id), merk-logo's, avatars — als ID of als URL.
+		$id_keys = (array) apply_filters( 'mcm_optimizer_media_id_meta_keys', [ 'thumbnail_id' ] );
+		if ( $id_keys ) {
+			$in = implode( ',', array_fill( 0, count( $id_keys ), '%s' ) );
+			foreach ( [ $wpdb->termmeta, $wpdb->postmeta ] as $table ) {
+				// phpcs:ignore WordPress.DB.PreparedSQLPlaceholders, WordPress.DB.PreparedSQL
+				foreach ( $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$table} WHERE meta_key IN ($in) AND meta_value > 0", $id_keys ) ) as $v ) {
+					$ids[ (int) $v ] = 1;
+				}
+			}
+		}
+		foreach ( [ $wpdb->termmeta, $wpdb->usermeta ] as $table ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL
+			foreach ( $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$table} WHERE meta_value LIKE %s", $like_seg ) ) as $v ) {
+				self::walk_value( maybe_unserialize( $v ), $ids, $paths, $bases );
+			}
 		}
 
 		// Postmeta van niet-bijlagen: Avada pagina-opties (_fusion), menu-
@@ -175,7 +224,7 @@ class MCM_Media_Scanner {
 					   AND pm.meta_key NOT LIKE %s
 					 ORDER BY pm.meta_id ASC LIMIT %d",
 					$laatste,
-					'%/uploads/%',
+					$like_seg,
 					$wpdb->esc_like( 'wpvivid' ) . '%',
 					$wpdb->esc_like( '_mcm' ) . '%',
 					$batch
@@ -218,7 +267,7 @@ class MCM_Media_Scanner {
 			}
 			return;
 		}
-		if ( is_string( $v ) && false !== stripos( $v, '/uploads/' ) ) {
+		if ( is_string( $v ) && false !== stripos( $v, self::upload_segment() ) ) {
 			if ( is_serialized( $v ) ) {
 				self::walk_value( maybe_unserialize( $v ), $ids, $paths, $bases, $depth + 1 );
 				return;
@@ -227,11 +276,34 @@ class MCM_Media_Scanner {
 		}
 	}
 
-	/** Haalt /uploads/-URL's uit tekst en voegt hun genormaliseerde pad toe. */
+	/** Naam van de uploadmap in URL's: meestal "uploads", anders bv. "media" (UPLOADS-constante). */
+	private static function upload_segment() {
+		static $seg = null;
+		if ( null === $seg ) {
+			$dir  = wp_upload_dir( null, false );
+			$path = trim( (string) wp_parse_url( (string) ( $dir['baseurl'] ?? '' ), PHP_URL_PATH ), '/' );
+			$seg  = '' !== $path ? strtolower( basename( $path ) ) : 'uploads';
+		}
+		return $seg;
+	}
+
+	/** Ankers waarachter het pad relatief aan de uploadmap begint. */
+	private static function upload_anchors() {
+		$a = [ '/uploads/' ];
+		if ( 'uploads' !== self::upload_segment() ) {
+			$a[] = '/' . self::upload_segment() . '/';
+		}
+		return $a;
+	}
+
+	/** Haalt upload-URL's uit tekst en voegt hun genormaliseerde pad toe. */
 	private static function collect_upload_urls( $text, array &$paths, array &$bases ) {
 		// Ook JSON-ge-escapete slashes (\/uploads\/) van page builders.
-		$text = str_replace( '\\/', '/', (string) $text );
-		if ( preg_match_all( '#/uploads/[^"\'\s)<>]+?\.(?:jpe?g|png|gif|webp|svg|avif|ico|bmp)(?:\.webp)?#i', $text, $m ) ) {
+		$text    = str_replace( '\\/', '/', (string) $text );
+		$anchors = implode( '|', array_map( static function ( $a ) {
+			return preg_quote( $a, '#' );
+		}, self::upload_anchors() ) );
+		if ( preg_match_all( '#(?:' . $anchors . ')[^"\'\s)<>]+?\.(?:jpe?g|png|gif|webp|svg|avif|ico|bmp)(?:\.webp)?#i', $text, $m ) ) {
 			foreach ( $m[0] as $u ) {
 				$p = self::normalize_path( $u );
 				if ( '' !== $p ) {
@@ -244,16 +316,26 @@ class MCM_Media_Scanner {
 
 	/**
 	 * Maakt van een URL of bijlagepad een vergelijkbaar pad relatief aan uploads:
-	 * kleine letters, zonder formaat (-300x200), -scaled of een extra .webp.
+	 * kleine letters, zonder formaat (-300x200), -scaled, een extra .webp of het
+	 * multisite-voorvoegsel sites/N/.
 	 */
 	public static function normalize_path( $s ) {
 		$s   = strtolower( rawurldecode( (string) $s ) );
 		$s   = preg_replace( '/[?#].*$/', '', $s );
-		$pos = strrpos( $s, '/uploads/' );
+		$pos = false;
+		$len = 0;
+		foreach ( self::upload_anchors() as $a ) {
+			$p = strrpos( $s, $a );
+			if ( false !== $p && ( false === $pos || $p > $pos ) ) {
+				$pos = $p;
+				$len = strlen( $a );
+			}
+		}
 		if ( false !== $pos ) {
-			$s = substr( $s, $pos + 9 );
+			$s = substr( $s, $pos + $len );
 		}
 		$s = ltrim( $s, '/' );
+		$s = preg_replace( '#^sites/\d+/#', '', $s );                        // multisite-subsite
 		$s = preg_replace( '/\.(jpe?g|png|gif)\.webp$/', '.$1', $s );       // foto.jpg.webp → foto.jpg
 		$s = preg_replace( '/-\d+x\d+(?=\.[a-z0-9]+$)/', '', $s );          // -300x200
 		$s = preg_replace( '/-scaled(?=\.[a-z0-9]+$)/', '', $s );           // -scaled
@@ -285,10 +367,11 @@ class MCM_Media_Scanner {
 		$stem = preg_replace( '/(-scaled)?\.[a-z0-9]+$/i', '', $file );
 		if ( '' !== $stem && false !== strpos( $stem, '/' ) ) {
 			$like = '%' . $wpdb->esc_like( $stem ) . '%';
-			if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->posts} WHERE post_type NOT IN ( 'attachment', 'revision' ) AND post_status NOT IN ( 'trash', 'auto-draft' ) AND post_content LIKE %s LIMIT 1", $like ) ) ) {
+			$esc  = '%' . $wpdb->esc_like( str_replace( '/', '\\/', $stem ) ) . '%'; // JSON-ge-escapet (page builders)
+			if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->posts} WHERE post_type NOT IN ( 'attachment', 'revision' ) AND post_status NOT IN ( 'trash', 'auto-draft' ) AND ( post_content LIKE %s OR post_content LIKE %s ) LIMIT 1", $like, $esc ) ) ) {
 				return true;
 			}
-			if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->postmeta} pm JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.post_type NOT IN ( 'attachment', 'revision' ) AND pm.meta_key NOT LIKE %s AND pm.meta_value LIKE %s LIMIT 1", $wpdb->esc_like( 'wpvivid' ) . '%', $like ) ) ) {
+			if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->postmeta} pm JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.post_type NOT IN ( 'attachment', 'revision' ) AND pm.meta_key NOT LIKE %s AND ( pm.meta_value LIKE %s OR pm.meta_value LIKE %s ) LIMIT 1", $wpdb->esc_like( 'wpvivid' ) . '%', $like, $esc ) ) ) {
 				return true;
 			}
 			if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->options} WHERE option_name NOT LIKE %s AND option_name NOT LIKE %s AND option_name NOT LIKE %s AND option_value LIKE %s LIMIT 1", $wpdb->esc_like( '_transient' ) . '%', $wpdb->esc_like( 'wpvivid' ) . '%', $wpdb->esc_like( 'mcm_' ) . '%', $like ) ) ) {
@@ -328,7 +411,79 @@ class MCM_Media_Scanner {
 				break;
 			}
 		}
-		return array_slice( array_values( array_unique( apply_filters( 'mcm_optimizer_live_check_urls', $urls ) ) ), 0, $limit );
+		$urls = array_slice( $urls, 0, $limit );
+		// Een paar archiefpagina's (categorieën, productcategorieën): daar staan
+		// categorie-afbeeldingen die op berichtpagina's niet voorkomen.
+		$terms = get_terms( [ 'taxonomy' => get_taxonomies( [ 'public' => true ] ), 'hide_empty' => true, 'number' => 30 ] );
+		if ( is_array( $terms ) ) {
+			foreach ( $terms as $t ) {
+				$u = get_term_link( $t );
+				if ( is_string( $u ) ) {
+					$urls[] = $u;
+				}
+			}
+		}
+		// Alleen pagina's van de site zelf (geen externe adressen via filters of
+		// redirects). De homepage blijft altijd de eerste: live_step() beoordeelt die apart.
+		$home = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+		$urls = array_filter( (array) apply_filters( 'mcm_optimizer_live_check_urls', $urls ), static function ( $u ) use ( $home ) {
+			return strtolower( (string) wp_parse_url( (string) $u, PHP_URL_HOST ) ) === $home;
+		} );
+		return array_values( array_unique( array_merge( [ home_url( '/' ) ], $urls ) ) );
+	}
+
+	/**
+	 * Haalt één pagina van de eigen site op. Redirects alleen binnen dezelfde
+	 * host (max. 2), zodat een redirect-plugin de server nooit naar buiten stuurt.
+	 */
+	private static function fetch_own_page( $url ) {
+		$home = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+		for ( $i = 0; $i < 3; $i++ ) {
+			$res = wp_remote_get(
+				add_query_arg( 'mcm_live', '1', $url ), // query string: buiten de paginacache om, dus de actuele pagina.
+				[
+					'timeout'     => 10,
+					'redirection' => 0,
+					'sslverify'   => apply_filters( 'https_local_ssl_verify', false ),
+					'user-agent'  => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36 MCM-Optimizer-LiveCheck',
+				]
+			);
+			if ( is_wp_error( $res ) ) {
+				return $res;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $res );
+			$loc  = (string) wp_remote_retrieve_header( $res, 'location' );
+			if ( $code >= 300 && $code < 400 && '' !== $loc ) {
+				$loc = 0 === strpos( $loc, '/' ) ? home_url( $loc ) : $loc;
+				if ( strtolower( (string) wp_parse_url( $loc, PHP_URL_HOST ) ) !== $home ) {
+					return new WP_Error( 'external_redirect', 'Redirect naar een andere host.' );
+				}
+				$url = remove_query_arg( 'mcm_live', $loc );
+				continue;
+			}
+			return $res;
+		}
+		return new WP_Error( 'too_many_redirects', 'Te veel redirects.' );
+	}
+
+	/** _wp_attached_file + origineel (original_image) voor een lijst bijlagen, in porties. */
+	private static function files_for_ids( array $ids ) {
+		global $wpdb;
+		$out = [];
+		foreach ( array_chunk( array_map( 'intval', $ids ), 200 ) as $chunk ) {
+			$in = implode( ',', $chunk );
+			// phpcs:ignore WordPress.DB.PreparedSQL
+			foreach ( $wpdb->get_results( "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id IN ($in) AND meta_key IN ( '_wp_attached_file', '_wp_attachment_metadata' )" ) as $r ) {
+				$pid = (int) $r->post_id;
+				if ( '_wp_attached_file' === $r->meta_key ) {
+					$out[ $pid ]['file'] = (string) $r->meta_value;
+				} elseif ( false !== strpos( (string) $r->meta_value, 'original_image' ) ) {
+					$m                       = maybe_unserialize( $r->meta_value );
+					$out[ $pid ]['original'] = is_array( $m ) ? (string) ( $m['original_image'] ?? '' ) : '';
+				}
+			}
+		}
+		return $out;
 	}
 
 	/**
@@ -339,14 +494,20 @@ class MCM_Media_Scanner {
 	 */
 	private static function live_step() {
 		$scan = get_option( self::SCAN_OPT, [] );
+		if ( empty( $scan['time'] ) ) {
+			return [ 'status' => 'failed', 'checked' => 0, 'total' => 0, 'errors' => 0, 'protected' => [], 'reason' => 'Geen scan gevonden — scan opnieuw.' ];
+		}
 		if ( empty( $scan['orphan_ids'] ) && 'todo' === ( $scan['live']['status'] ?? '' ) ) {
 			$scan['live'] = [ 'status' => 'done', 'checked' => 0, 'total' => 0, 'errors' => 0, 'protected' => [] ];
 			update_option( self::SCAN_OPT, $scan, false );
 			return $scan['live'];
 		}
 		$state = get_option( self::LIVE_OPT, [] );
-		if ( ( $state['scan_time'] ?? '' ) !== ( $scan['time'] ?? '' ) ) {
-			$state = [ 'scan_time' => $scan['time'] ?? '', 'urls' => self::live_urls(), 'pos' => 0, 'seen' => [], 'errors' => 0 ];
+		if ( empty( $state ) && 'done' === ( $scan['live']['status'] ?? '' ) ) {
+			return $scan['live']; // al afgerond voor deze scan.
+		}
+		if ( ( $state['scan_time'] ?? '' ) !== $scan['time'] || ! isset( $state['urls'] ) ) {
+			$state = [ 'scan_time' => $scan['time'], 'urls' => self::live_urls(), 'pos' => 0, 'seen' => [], 'errors' => 0, 'empty' => 0, 'home_ok' => false ];
 		}
 
 		$budget = time() + max( 5, (int) apply_filters( 'mcm_optimizer_live_check_budget', 12 ) );
@@ -354,15 +515,7 @@ class MCM_Media_Scanner {
 		while ( $state['pos'] < $total && time() < $budget ) {
 			$url = $state['urls'][ $state['pos'] ];
 			$state['pos']++;
-			$res = wp_remote_get(
-				add_query_arg( 'mcm_live', '1', $url ), // query string: buiten de paginacache om, dus de actuele pagina.
-				[
-					'timeout'     => 10,
-					'redirection' => 3,
-					'sslverify'   => apply_filters( 'https_local_ssl_verify', false ),
-					'user-agent'  => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36 MCM-Optimizer-LiveCheck',
-				]
-			);
+			$res = self::fetch_own_page( $url );
 			if ( is_wp_error( $res ) || 200 !== (int) wp_remote_retrieve_response_code( $res ) ) {
 				$state['errors']++;
 				continue;
@@ -370,18 +523,26 @@ class MCM_Media_Scanner {
 			$paths = [];
 			$bases = [];
 			self::collect_upload_urls( wp_remote_retrieve_body( $res ), $paths, $bases );
+			if ( ! $paths ) {
+				$state['empty']++; // 200 zonder één upload: onderhoudspagina, challenge, of echt zonder afbeeldingen.
+			}
+			if ( 1 === $state['pos'] ) {
+				$state['home_ok'] = (bool) $paths;
+			}
 			$state['seen'] += $paths;
+			// Tussentijds opslaan: valt het verzoek om (time-out), dan gaat het hier verder.
+			update_option( self::LIVE_OPT, $state, false );
 		}
 
-		$live = [ 'status' => 'running', 'checked' => $state['pos'], 'total' => $total, 'errors' => $state['errors'], 'protected' => [] ];
+		$live = [ 'status' => 'running', 'checked' => $state['pos'], 'total' => $total, 'errors' => $state['errors'], 'empty' => $state['empty'], 'protected' => [] ];
 		if ( $state['pos'] >= $total ) {
 			$keep      = [];
 			$protected = [];
+			$files     = self::files_for_ids( (array) ( $scan['orphan_ids'] ?? [] ) );
 			foreach ( (array) ( $scan['orphan_ids'] ?? [] ) as $oid ) {
-				$file = (string) get_post_meta( $oid, '_wp_attached_file', true );
-				$meta = wp_get_attachment_metadata( $oid );
+				$file = (string) ( $files[ (int) $oid ]['file'] ?? '' );
 				$hit  = false;
-				foreach ( self::attachment_keys( $file, is_array( $meta ) ? (string) ( $meta['original_image'] ?? '' ) : '' ) as $k ) {
+				foreach ( self::attachment_keys( $file, (string) ( $files[ (int) $oid ]['original'] ?? '' ) ) as $k ) {
 					if ( isset( $state['seen'][ $k ] ) ) {
 						$hit = true;
 						break;
@@ -393,15 +554,28 @@ class MCM_Media_Scanner {
 					$keep[] = (int) $oid;
 				}
 			}
-			$live['status']     = ( $state['errors'] >= $total && $total > 0 ) ? 'failed' : 'done';
+			// Alleen "gelukt" als de homepage afbeeldingen liet zien en minstens
+			// 80% van de pagina's echt bekeken kon worden. Anders (onderhoudsmodus,
+			// bot-challenge, onbereikbaar) mag de prullenbak alleen na een extra bevestiging.
+			$ok             = $total > 0 && $state['home_ok'] && ( $total - $state['errors'] ) >= 0.8 * $total;
+			$live['status'] = $ok ? 'done' : 'failed';
+			if ( ! $ok ) {
+				$live['reason'] = ! $state['home_ok'] ? 'De homepage gaf geen afbeeldingen terug (onderhoudsmodus, beveiligingscontrole of niet bereikbaar).' : 'Te veel pagina\'s waren niet bereikbaar.';
+			}
 			$live['protected']  = $protected;
 			$scan['orphan_ids'] = $keep;
 			$scan['orphans']    = count( $keep );
 			$scan['referenced'] = (int) $scan['total'] - count( $keep );
 			if ( $protected ) {
-				$summary         = self::summary( $keep );
-				$scan['buckets'] = $summary['buckets'];
-				$scan['sample']  = $summary['sample'];
+				$buckets = [];
+				foreach ( $keep as $kid ) {
+					$f               = (string) ( $files[ $kid ]['file'] ?? '' );
+					$seg             = ( false !== strpos( $f, '/' ) ) ? substr( $f, 0, strpos( $f, '/' ) ) : '(root)';
+					$buckets[ $seg ] = ( $buckets[ $seg ] ?? 0 ) + 1;
+				}
+				arsort( $buckets );
+				$scan['buckets'] = $buckets;
+				$scan['sample']  = self::sample( $keep );
 			}
 			delete_option( self::LIVE_OPT );
 		} else {
@@ -453,12 +627,17 @@ class MCM_Media_Scanner {
 		// versie; het origineel staat in de metadata). In één query, zodat er
 		// niet per bijlage metadata geladen hoeft te worden.
 		$originals = [];
-		foreach ( $wpdb->get_results( "SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attachment_metadata' AND meta_value LIKE '%original_image%'" ) as $row ) {
-			$m = maybe_unserialize( $row->meta_value );
-			if ( is_array( $m ) && ! empty( $m['original_image'] ) ) {
-				$originals[ (int) $row->post_id ] = (string) $m['original_image'];
+		$last      = 0;
+		do {
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id, post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attachment_metadata' AND meta_value LIKE %s AND meta_id > %d ORDER BY meta_id LIMIT 500", '%original_image%', $last ) );
+			foreach ( $rows as $row ) {
+				$last = (int) $row->meta_id;
+				$m    = maybe_unserialize( $row->meta_value );
+				if ( is_array( $m ) && ! empty( $m['original_image'] ) ) {
+					$originals[ (int) $row->post_id ] = (string) $m['original_image'];
+				}
 			}
-		}
+		} while ( count( $rows ) === 500 );
 
 		// Bestandsnamen die bij meer dan één bijlage horen (dubbele uploads):
 		// daar beslist alleen het pad, niet de naam.
@@ -514,7 +693,7 @@ class MCM_Media_Scanner {
 		}
 
 		arsort( $buckets );
-		$sample = self::summary( $orphans )['sample'];
+		$sample = self::sample( $orphans );
 
 		// Dubbele uploads: groepen waarvan minstens één kopie ongebruikt is.
 		$dupe_groups = [];
@@ -540,15 +719,8 @@ class MCM_Media_Scanner {
 		];
 	}
 
-	/** Verdeling per map + steekproef (24 miniaturen) voor een lijst wezen. */
-	private static function summary( array $ids ) {
-		$buckets = [];
-		foreach ( $ids as $id ) {
-			$file            = (string) get_post_meta( $id, '_wp_attached_file', true );
-			$seg             = ( false !== strpos( $file, '/' ) ) ? substr( $file, 0, strpos( $file, '/' ) ) : '(root)';
-			$buckets[ $seg ] = ( $buckets[ $seg ] ?? 0 ) + 1;
-		}
-		arsort( $buckets );
+	/** Steekproef (24 miniaturen) uit een lijst wezen. */
+	private static function sample( array $ids ) {
 		$sample = [];
 		foreach ( array_slice( $ids, 0, 24 ) as $sid ) {
 			$url = wp_get_attachment_image_url( $sid, 'thumbnail' );
@@ -557,7 +729,7 @@ class MCM_Media_Scanner {
 			}
 			$sample[] = [ 'id' => (int) $sid, 'url' => $url ?: '' ];
 		}
-		return [ 'buckets' => $buckets, 'sample' => $sample ];
+		return $sample;
 	}
 
 	/**
@@ -631,33 +803,47 @@ class MCM_Media_Scanner {
 			wp_send_json_error( 'Voer eerst de live-controle uit (scan opnieuw).' );
 		}
 
+		// Zonder prullenbak (EMPTY_TRASH_DAYS = 0) wist wp_trash_post() direct
+		// en definitief. Dan doen we niets: deze knop moet terug te draaien zijn.
+		if ( ! EMPTY_TRASH_DAYS ) {
+			wp_send_json_error( 'De prullenbak staat uit op deze site (EMPTY_TRASH_DAYS = 0): verplaatsen zou direct definitief wissen. Zet EMPTY_TRASH_DAYS in wp-config op bijvoorbeeld 30.' );
+		}
+
 		if ( empty( $ids ) ) {
 			wp_send_json_success( [ 'done' => true, 'processed' => 0, 'remaining' => 0, 'trashed' => self::count_trashed() ] );
 		}
 
-		$batch     = array_splice( $ids, 0, self::BATCH );
+		$budget    = microtime( true ) + 15;
 		$processed = 0;
+		$skipped   = 0;
 
-		foreach ( $batch as $id ) {
-			$id  = (int) $id;
+		while ( $ids && microtime( true ) < $budget ) {
+			$id  = (int) array_shift( $ids );
 			$att = get_post( $id );
-			if ( ! $att || 'attachment' !== $att->post_type ) {
-				continue;
+			// Alleen gewone bijlagen (inherit/private); al in de prullenbak of iets anders → overslaan.
+			if ( ! $att || 'attachment' !== $att->post_type || ! in_array( $att->post_status, [ 'inherit', 'private' ], true ) ) {
+				$skipped++;
+			} elseif ( self::still_referenced( $id ) ) {
+				$skipped++; // intussen tóch in gebruik.
+			} elseif ( wp_trash_post( $id ) ) {
+				// Niet automatisch na EMPTY_TRASH_DAYS laten wissen (wp_scheduled_delete
+				// kijkt naar _wp_trash_meta_time): definitief wissen gaat alleen via
+				// de knop hieronder. _wp_trash_meta_status blijft, voor terugzetten.
+				delete_post_meta( $id, '_wp_trash_meta_time' );
+				update_post_meta( $id, self::TRASH_META, current_time( 'mysql' ) );
+				$processed++;
+			} else {
+				$skipped++;
 			}
-			if ( self::still_referenced( $id ) ) {
-				continue; // intussen tóch in gebruik — overslaan.
-			}
-			wp_trash_post( $id );
-			update_post_meta( $id, self::TRASH_META, current_time( 'mysql' ) );
-			$processed++;
+			// Na elk item opslaan: valt het verzoek om, dan begint de volgende ronde niet opnieuw.
+			$scan['orphan_ids'] = array_values( $ids );
+			update_option( self::SCAN_OPT, $scan, false );
 		}
-
-		$scan['orphan_ids'] = array_values( $ids );
-		update_option( self::SCAN_OPT, $scan, false );
 
 		wp_send_json_success( [
 			'done'      => empty( $ids ),
 			'processed' => $processed,
+			'skipped'   => $skipped,
 			'remaining' => count( $ids ),
 			'trashed'   => self::count_trashed(),
 		] );
@@ -744,8 +930,15 @@ class MCM_Media_Scanner {
 					variatie-foto's, content, logo, Avada-opties en pagina-opties, widgets, menu's).
 					Daarna een <strong>live-controle</strong>: afbeeldingen die op de pagina's van de site staan, worden beschermd.
 					Wees-afbeeldingen gaan naar de <strong>prullenbak</strong> —
-					terugzetbaar; bestanden blijven op schijf tot je ze definitief verwijdert.
+					terugzetbaar; bestanden blijven op schijf tot je ze hieronder definitief verwijdert
+					(WordPress leegt deze prullenbak niet automatisch).
 				</p>
+				<?php if ( ! EMPTY_TRASH_DAYS ) : ?>
+					<div class="mcm-opt-alert mcm-opt-alert-warn"><span class="dashicons dashicons-warning"></span>
+						De prullenbak staat uit op deze site (<code>EMPTY_TRASH_DAYS</code> = 0). Scannen kan, maar verplaatsen naar de
+						prullenbak is uitgeschakeld: WordPress zou de afbeeldingen dan direct definitief wissen.
+					</div>
+				<?php endif; ?>
 
 				<div id="mcm-media-loading" style="display:none;">
 					<span class="spinner is-active" style="float:none;margin:0 8px 0 0;"></span>
@@ -890,9 +1083,9 @@ jQuery(document).ready(function($) {
 				'Live-controle: de pagina\'s van de site worden opgehaald om te zien of deze afbeeldingen tóch zichtbaar zijn… <span id="mcm-media-live-status"></span></div>';
 		} else if (live.status === 'failed') {
 			html += '<div class="mcm-opt-alert mcm-opt-alert-danger"><span class="dashicons dashicons-warning"></span> ' +
-				'De live-controle is niet gelukt: de site kon zijn eigen pagina\'s niet ophalen. Controleer de steekproef extra goed.</div>';
+				'De live-controle is niet gelukt' + (live.reason ? ': ' + esc(live.reason) : '.') + ' Controleer de steekproef extra goed.</div>';
 		} else {
-			html += '<p class="description">Live-controle: ' + fmt(live.checked) + ' pagina\'s bekeken' + (live.errors ? ', ' + fmt(live.errors) + ' niet bereikbaar' : '') + '.</p>';
+			html += '<p class="description">Live-controle: ' + fmt(live.checked) + ' pagina\'s bekeken' + (live.errors ? ', ' + fmt(live.errors) + ' niet bereikbaar' : '') + (live.empty ? ', ' + fmt(live.empty) + ' zonder afbeeldingen' : '') + '.</p>';
 		}
 
 		if (live) {
@@ -909,7 +1102,7 @@ jQuery(document).ready(function($) {
 	function liveLoop() {
 		$.post(mcmOptimizer.ajaxUrl, { action: 'mcm_media_live', nonce: mcmOptimizer.nonce }, function(res) {
 			if (!res.success) {
-				render(scanData, { status: 'failed', protected: [], checked: 0, errors: 0 });
+				render(scanData, { status: 'failed', protected: [], checked: 0, errors: 0, reason: typeof res.data === 'string' ? res.data : '' });
 				return;
 			}
 			var r = res.data, l = r.live;
@@ -929,23 +1122,25 @@ jQuery(document).ready(function($) {
 	/* ---- Generieke batch-runner ---- */
 	function runBatch(action, total, label, onDone, extra) {
 		$('#mcm-media-progress').show();
-		var done = 0;
+		var done = 0, skipped = 0;
 
 		function next() {
 			$.post(mcmOptimizer.ajaxUrl, $.extend({ action: action, nonce: mcmOptimizer.nonce }, extra || {}), function(res) {
 				if (!res.success) {
-					$('#mcm-media-status').html('<strong style="color:var(--mcm-terracotta);">Fout — ververs de pagina en probeer opnieuw.</strong>');
+					var why = typeof res.data === 'string' ? res.data : 'ververs de pagina en probeer opnieuw.';
+					$('#mcm-media-status').html('<strong style="color:var(--mcm-terracotta);">Fout — ' + esc(why) + '</strong>');
 					return;
 				}
 				var d = res.data;
 				done += d.processed;
-				setBar(done, total);
-				$('#mcm-media-status').text(label + ': ' + fmt(done) + ' verwerkt, ' + fmt(d.remaining) + ' te gaan.');
+				skipped += d.skipped || 0;
+				setBar(done + skipped, total);
+				$('#mcm-media-status').text(label + ': ' + fmt(done) + ' verwerkt' + (skipped ? ', ' + fmt(skipped) + ' overgeslagen (intussen in gebruik)' : '') + ', ' + fmt(d.remaining) + ' te gaan.');
 				if (typeof d.trashed !== 'undefined') {
 					$('#mcm-media-trash-count').text(d.trashed);
 				}
 				if (d.done) {
-					$('#mcm-media-status').html('<strong>Klaar — ' + fmt(done) + ' verwerkt.</strong>');
+					$('#mcm-media-status').html('<strong>Klaar — ' + fmt(done) + ' verwerkt' + (skipped ? ', ' + fmt(skipped) + ' overgeslagen' : '') + '.</strong>');
 					if (onDone) { onDone(d); }
 				} else {
 					next();

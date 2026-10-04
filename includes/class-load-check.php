@@ -109,7 +109,16 @@ class MCM_Load_Check {
 			$count = 0;
 			$size  = 0;
 			$items = [];
-			$it    = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $base, FilesystemIterator::SKIP_DOTS ) );
+			try {
+				// CATCH_GET_CHILD: een onleesbare submap slaan we over in plaats van te crashen.
+				$it = new RecursiveIteratorIterator(
+					new RecursiveDirectoryIterator( $base, FilesystemIterator::SKIP_DOTS ),
+					RecursiveIteratorIterator::LEAVES_ONLY,
+					RecursiveIteratorIterator::CATCH_GET_CHILD
+				);
+			} catch ( Exception $e ) {
+				continue;
+			}
 			foreach ( $it as $file ) {
 				if ( ! $file->isFile() || ! preg_match( '/\.(zip|gz|tgz|tar|sql|wpress|daf|bak|7z|rar)$/i', $file->getFilename() ) ) {
 					continue;
@@ -142,6 +151,8 @@ class MCM_Load_Check {
 	 * voorbeeldbestand publiek bereikbaar is. true/false/null (niet te bepalen).
 	 */
 	public static function probe_public( $rel ) {
+		// Elk padsegment coderen (spaties, # of ? in bestandsnamen).
+		$rel = implode( '/', array_map( 'rawurlencode', explode( '/', (string) $rel ) ) );
 		$res = wp_remote_head(
 			content_url( $rel ),
 			[
@@ -155,8 +166,11 @@ class MCM_Load_Check {
 			return null;
 		}
 		$code = (int) wp_remote_retrieve_response_code( $res );
+		$type = strtolower( (string) wp_remote_retrieve_header( $res, 'content-type' ) );
 		if ( 200 === $code ) {
-			return true;
+			// Een 200 met een HTML-pagina is geen archief (bv. een catch-all of
+			// inlogpagina): dan weten we het niet zeker.
+			return 0 === strpos( $type, 'text/html' ) ? null : true;
 		}
 		return in_array( $code, [ 401, 403, 404, 410 ], true ) ? false : null;
 	}
@@ -277,11 +291,13 @@ class MCM_Load_Check {
 			$public = $b['public'];
 			// Zonder .htaccess is de map op Apache óók open; op nginx telt .htaccess nooit.
 			$open   = $f['nginx'] || empty( $b['htaccess'] );
-			$status = true === $public ? 'bad' : ( false === $public ? 'info' : ( $open ? 'warn' : 'info' ) );
+			// "Afgeschermd" geldt alleen voor deze test vanaf de server zelf; de archieven
+			// staan er nog steeds en horen niet in de webroot. Daarom nooit "ok".
+			$status = true === $public ? 'bad' : ( $open ? 'warn' : 'info' );
 			$rows[] = [
 				'Archieven in wp-content/' . $dir,
 				$status,
-				$b['count'] . ' bestand(en), ' . $b['size_mb'] . ' MB (' . $b['plugin'] . ')' . ( true === $public ? ' — PUBLIEK BEREIKBAAR' : ( false === $public ? ' — afgeschermd' : '' ) ),
+				$b['count'] . ' bestand(en), ' . $b['size_mb'] . ' MB (' . $b['plugin'] . ')' . ( true === $public ? ' — PUBLIEK BEREIKBAAR' : ( false === $public ? ' — bij deze test geweigerd' : '' ) ),
 				'opruimen of verplaatsen',
 				( true === $public
 					? 'Getest met een HEAD-verzoek (niets gedownload): ' . $b['examples'][0] . ' geeft 200. Iedereen die het pad raadt, kan dit downloaden — bij betaalde plugins of database-back-ups een echt lek. '
@@ -305,9 +321,19 @@ class MCM_Load_Check {
 		}
 		$f = self::facts();
 		foreach ( $f['backups'] as $dir => $b ) {
-			if ( ! empty( $b['examples'][0] ) ) {
-				$f['backups'][ $dir ]['public'] = self::probe_public( $b['examples'][0] );
+			// Tot drie voorbeelden: één bereikbaar = open. Alle geweigerd = bij deze test afgeschermd.
+			$res = null;
+			foreach ( array_slice( (array) $b['examples'], 0, 3 ) as $ex ) {
+				$p = self::probe_public( $ex );
+				if ( true === $p ) {
+					$res = true;
+					break;
+				}
+				if ( false === $p ) {
+					$res = false;
+				}
 			}
+			$f['backups'][ $dir ]['public'] = $res;
 		}
 		wp_send_json_success( [ 'rows' => self::evaluate( $f ) ] );
 	}

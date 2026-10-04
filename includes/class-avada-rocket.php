@@ -50,9 +50,41 @@ class MCM_Avada_Rocket {
 		return in_array( 'Avada', [ $theme->get( 'Name' ), $theme->get_template() ], true ) || class_exists( 'Avada' );
 	}
 
+	/**
+	 * De optie-rijen met Avada-instellingen. Op een meertalige site (WPML/Polylang)
+	 * heeft elke taal behalve Engels een eigen kopie: fusion_options_nl enz.
+	 * (Fusion_Settings::multilingual_options). Wijzigingen gaan naar alle kopieën.
+	 */
+	private static function option_names() {
+		$names = [ 'fusion_options' ];
+		if ( class_exists( 'Fusion_Multilingual' ) && method_exists( 'Fusion_Multilingual', 'get_available_languages' ) ) {
+			foreach ( (array) Fusion_Multilingual::get_available_languages() as $lang ) {
+				if ( is_string( $lang ) && ! in_array( $lang, [ '', 'en', 'all' ], true ) && is_array( get_option( 'fusion_options_' . $lang ) ) ) {
+					$names[] = 'fusion_options_' . $lang;
+				}
+			}
+		}
+		return array_values( array_unique( $names ) );
+	}
+
+	/** De instellingen van de standaardtaal (die de meeste bezoekers zien). */
 	private static function fusion_options() {
-		$o = get_option( 'fusion_options', [] );
+		$name = 'fusion_options';
+		if ( class_exists( 'Fusion_Multilingual' ) && method_exists( 'Fusion_Multilingual', 'get_default_language' ) ) {
+			$lang = (string) Fusion_Multilingual::get_default_language();
+			if ( ! in_array( $lang, [ '', 'en', 'all' ], true ) && is_array( get_option( 'fusion_options_' . $lang ) ) ) {
+				$name = 'fusion_options_' . $lang;
+			}
+		}
+		$o = get_option( $name, [] );
 		return is_array( $o ) ? $o : [];
+	}
+
+	/** Zet een Avada-instelling in elke taalkopie. */
+	private static function set_fusion( MCM_Perf_Changeset $cs, $sub, $value ) {
+		foreach ( self::option_names() as $name ) {
+			$cs->set( $name, $sub, $value );
+		}
 	}
 
 	private static function on( $v ) {
@@ -164,7 +196,7 @@ class MCM_Avada_Rocket {
 					'advised' => 'jQuery + Avada-bundel uitgezonderd',
 					'detail'  => ! $js_on
 						? 'Zet eerst de Avada JS-compiler aan (regel hierboven); deze uitzonderingen zijn getest met de gebundelde Avada-JS.'
-						: 'Zonder deze uitzonderingen houdt Delay JS de Avada-animaties tegen: elementen met een in-animatie (vaak de header op de homepage) blijven onzichtbaar tot de bezoeker scrolt of beweegt. Externe scripts (Analytics e.d.) blijven uitgesteld. Toe te voegen: ' . esc_html( implode( '  |  ', $missing ? $missing : $need ) ),
+						: 'Zonder deze uitzonderingen houdt Delay JS de Avada-animaties tegen: elementen met een in-animatie (vaak de header op de homepage) blijven onzichtbaar tot de bezoeker scrolt of beweegt. Externe scripts (Analytics e.d.) blijven uitgesteld. Toe te voegen: ' . implode( '  |  ', $missing ? $missing : $need ),
 				];
 			}
 
@@ -193,35 +225,33 @@ class MCM_Avada_Rocket {
 				'advised' => 'uit in Avada',
 				'detail'  => 'Avada Critical CSS naast WP Rocket\'s CSS-levering/RUCSS, en Avada "Load jQuery In Footer" naast WP Rocket defer/delay, doen hetzelfde werk dubbel en kunnen scripts breken. Klik in de Avada Performance-wizard ook nooit op "Apply All" naast WP Rocket.',
 			];
-
-			// --- WP Rocket-config voor dit domein (na verhuizing/import) --------
-			$cfg = self::rocket_config_files();
-			if ( null !== $cfg ) {
-				$recs[] = [
-					'key'     => 'rocket_config',
-					'label'   => 'WP Rocket-config voor dit domein',
-					'tier'    => 'veilig',
-					'ok'      => ! $cfg['missing'],
-					'current' => $cfg['missing'] ? 'ontbreekt: ' . implode( ', ', array_map( 'basename', $cfg['missing'] ) ) : 'aanwezig',
-					'advised' => 'aanwezig',
-					'detail'  => 'Zonder config-bestand voor het huidige domein (wp-content/wp-rocket-config/) cachet WP Rocket niets. Gebeurt na verhuizen of importeren naar een ander domein.',
-				];
-			}
 		}
 
 		// --- Revisies --------------------------------------------------------
-		$limit     = (int) ( $f['post_revisions_limit'] ?? -1 );
-		$const     = defined( 'WP_POST_REVISIONS' ) && is_int( WP_POST_REVISIONS ) && WP_POST_REVISIONS >= 0 ? WP_POST_REVISIONS : null;
-		$effective = $limit >= 0 ? $limit : $const;
-		$recs[] = [
-			'key'     => 'avada_revisions',
-			'label'   => 'Revisies per pagina beperken',
-			'tier'    => 'veilig',
-			'ok'      => null !== $effective && $effective <= 10,
-			'current' => null === $effective ? 'onbeperkt' : (string) $effective,
-			'advised' => '5',
-			'detail'  => 'Avada-pagina\'s maken grote revisies; onbeperkt bewaren laat de database groeien (Sagittarius: 311 revisies, posts-tabel 25 MB). Bestaande revisies opruimen gaat via de database-opschoning hierboven.',
-		];
+		// Avada-instelling bestaat sinds 7.15.6 (filter wp_revisions_to_keep).
+		// -1 = WordPress-standaard volgen: WP_POST_REVISIONS (true/ontbreekt = onbeperkt,
+		// false = uit, getal = dat getal).
+		if ( version_compare( (string) ( defined( 'AVADA_VERSION' ) ? AVADA_VERSION : '0' ), '7.15.6', '>=' ) ) {
+			$limit = isset( $f['post_revisions_limit'] ) && '' !== $f['post_revisions_limit'] ? (int) $f['post_revisions_limit'] : -1;
+			if ( $limit >= 0 ) {
+				$effective = $limit;
+			} elseif ( ! defined( 'WP_POST_REVISIONS' ) || true === WP_POST_REVISIONS ) {
+				$effective = null; // onbeperkt
+			} elseif ( false === WP_POST_REVISIONS ) {
+				$effective = 0;
+			} else {
+				$effective = (int) WP_POST_REVISIONS < 0 ? null : (int) WP_POST_REVISIONS;
+			}
+			$recs[] = [
+				'key'     => 'avada_revisions',
+				'label'   => 'Revisies per pagina beperken',
+				'tier'    => 'veilig',
+				'ok'      => null !== $effective && $effective <= 10,
+				'current' => null === $effective ? 'onbeperkt' : ( 0 === $effective ? 'uit' : (string) $effective ),
+				'advised' => '5',
+				'detail'  => 'Avada-pagina\'s maken grote revisies; onbeperkt bewaren laat de database groeien (Sagittarius: 311 revisies, posts-tabel 25 MB). Bestaande revisies opruimen gaat via de database-opschoning hierboven.',
+			];
+		}
 
 		// --- WebP voor nieuwe uploads ----------------------------------------
 		$webp_ok = function_exists( 'wp_image_editor_supports' ) && wp_image_editor_supports( [ 'mime_type' => 'image/webp' ] );
@@ -248,7 +278,7 @@ class MCM_Avada_Rocket {
 				'current' => $miss ? implode( ', ', array_keys( $miss ) ) : 'alles wat gebruikt wordt staat aan',
 				'advised' => 'aan',
 				'detail'  => $miss
-					? 'Deze elementen staan in de content (' . esc_html( self::where_used_text( $miss ) ) . ') maar zijn uitgeschakeld in Avada → Performance → Avada Elements. Ze verschijnen als losse shortcode-tekst; een uitgeschakelde honeypot laat elke formulier-inzending mislukken. De knop zet alleen deze elementen aan.'
+					? 'Deze elementen staan in de content (' . self::where_used_text( $miss ) . ') maar zijn uitgeschakeld in Avada → Performance → Avada Elements. Ze verschijnen als losse shortcode-tekst; een uitgeschakelde honeypot laat elke formulier-inzending mislukken. De knop zet alleen deze elementen aan.'
 					: 'Elementen die niet gebruikt worden mogen uit blijven (scheelt geheugen per paginaweergave).',
 			];
 			$recs[] = [
@@ -291,6 +321,26 @@ class MCM_Avada_Rocket {
 	}
 
 	/** Config-bestanden van WP Rocket voor dit domein, of null als WP Rocket niet geladen is. */
+	/**
+	 * WP Rocket-config voor dit domein (na verhuizing/import). Geldt voor elke
+	 * site met WP Rocket, niet alleen Avada. Geeft een aanbeveling of null.
+	 */
+	public static function rocket_config_rec() {
+		$cfg = self::rocket_config_files();
+		if ( null === $cfg ) {
+			return null;
+		}
+		return [
+			'key'     => 'rocket_config',
+			'label'   => 'WP Rocket-config voor dit domein',
+			'tier'    => 'veilig',
+			'ok'      => ! $cfg['missing'],
+			'current' => $cfg['missing'] ? 'ontbreekt: ' . implode( ', ', array_map( 'basename', $cfg['missing'] ) ) : 'aanwezig',
+			'advised' => 'aanwezig',
+			'detail'  => 'Zonder config-bestand voor het huidige domein (wp-content/wp-rocket-config/) cachet WP Rocket niets. Gebeurt na verhuizen of importeren naar een ander domein.',
+		];
+	}
+
 	private static function rocket_config_files() {
 		if ( ! function_exists( 'get_rocket_config_file' ) ) {
 			return null;
@@ -461,8 +511,8 @@ class MCM_Avada_Rocket {
 				if ( $s && 1 === (int) ( $s['remove_unused_css'] ?? 0 ) ) {
 					return new WP_Error( 'rucss', 'Zet eerst WP Rocket "Ongebruikte CSS verwijderen" uit — anders blijven de compilers geforceerd uit.' );
 				}
-				$cs->set( 'fusion_options', 'css_cache_method', 'file' );
-				$cs->set( 'fusion_options', 'js_compiler', '1' );
+				self::set_fusion( $cs, 'css_cache_method', 'file' );
+				self::set_fusion( $cs, 'js_compiler', '1' );
 				return true;
 
 			case 'avada_rucss_off':
@@ -498,7 +548,7 @@ class MCM_Avada_Rocket {
 					return new WP_Error( 'norocket', 'WP Rocket-instellingen niet gevonden.' );
 				}
 				$cs->set( 'wp_rocket_settings', 'lazyload', 1 );
-				$cs->set( 'fusion_options', 'lazy_load', 'none' );
+				self::set_fusion( $cs, 'lazy_load', 'none' );
 				return true;
 
 			case 'avada_conflicts':
@@ -506,19 +556,19 @@ class MCM_Avada_Rocket {
 					return new WP_Error( 'norocket', 'WP Rocket-instellingen niet gevonden.' );
 				}
 				foreach ( array_keys( self::conflicts( $f, $s ) ) as $opt ) {
-					$cs->set( 'fusion_options', $opt, '0' );
+					self::set_fusion( $cs, $opt, '0' );
 				}
 				return true;
 
 			case 'avada_revisions':
-				$cs->set( 'fusion_options', 'post_revisions_limit', '5' );
+				self::set_fusion( $cs, 'post_revisions_limit', '5' );
 				return true;
 
 			case 'avada_webp':
 				if ( ! wp_image_editor_supports( [ 'mime_type' => 'image/webp' ] ) ) {
 					return new WP_Error( 'webp', 'De server ondersteunt geen WebP.' );
 				}
-				$cs->set( 'fusion_options', 'upload_image_format', 'webp' );
+				self::set_fusion( $cs, 'upload_image_format', 'webp' );
 				return true;
 
 			case 'rocket_config':
@@ -555,19 +605,21 @@ class MCM_Avada_Rocket {
 class MCM_Perf_Changeset {
 
 	private $opts    = [];
+	private $fresh   = [];
 	private $changes = [];
 
 	public function set( $option, $sub, $value ) {
 		if ( ! array_key_exists( $option, $this->opts ) ) {
-			$cur                   = get_option( $option, [] );
-			$this->opts[ $option ] = is_array( $cur ) ? $cur : [];
+			$cur                    = get_option( $option, null );
+			$this->fresh[ $option ] = null === $cur; // optie-rij bestond nog niet
+			$this->opts[ $option ]  = is_array( $cur ) ? $cur : [];
 		}
 		$existed = array_key_exists( $sub, $this->opts[ $option ] );
 		$old     = $existed ? $this->opts[ $option ][ $sub ] : null;
 		if ( $existed && self::same( $old, $value ) ) {
 			return;
 		}
-		$this->changes[]               = [ 'option' => $option, 'sub' => $sub, 'existed' => $existed, 'old' => $old, 'new' => $value ];
+		$this->changes[]               = [ 'option' => $option, 'sub' => $sub, 'existed' => $existed, 'old' => $old, 'new' => $value, 'fresh' => $this->fresh[ $option ] ];
 		$this->opts[ $option ][ $sub ] = $value;
 	}
 
@@ -586,24 +638,50 @@ class MCM_Perf_Changeset {
 		return $this->changes;
 	}
 
-	/** Zet een eerder vastgelegde lijst wijzigingen terug (in omgekeerde volgorde). */
+	/**
+	 * Zet een eerder vastgelegde lijst wijzigingen terug (in omgekeerde volgorde).
+	 * Alleen waar de huidige waarde nog die van de toepassing is: is een
+	 * instelling sindsdien opnieuw gewijzigd (met de hand of door een latere
+	 * toepassing), dan blijft die staan en komt hij in 'skipped'.
+	 * Een optie-rij die door de toepassing ontstond en nu leeg is, wordt verwijderd.
+	 */
 	public static function revert( array $changes ) {
-		$touched = [];
+		$touched  = [];
+		$fresh    = [];
+		$skipped  = [];
+		$reverted = 0;
 		foreach ( array_reverse( $changes ) as $c ) {
-			$opt = $c['option'];
+			$opt = (string) ( $c['option'] ?? '' );
+			$sub = $c['sub'] ?? null;
+			if ( '' === $opt || null === $sub ) {
+				continue;
+			}
 			if ( ! isset( $touched[ $opt ] ) ) {
 				$cur             = get_option( $opt, [] );
 				$touched[ $opt ] = is_array( $cur ) ? $cur : [];
 			}
-			if ( ! empty( $c['existed'] ) ) {
-				$touched[ $opt ][ $c['sub'] ] = $c['old'];
-			} else {
-				unset( $touched[ $opt ][ $c['sub'] ] );
+			$now = array_key_exists( $sub, $touched[ $opt ] ) ? $touched[ $opt ][ $sub ] : null;
+			if ( null === $now || ! self::same( $now, $c['new'] ?? null ) ) {
+				$skipped[] = $opt . ' → ' . $sub;
+				continue;
 			}
+			if ( ! empty( $c['existed'] ) ) {
+				$touched[ $opt ][ $sub ] = $c['old'];
+			} else {
+				unset( $touched[ $opt ][ $sub ] );
+			}
+			if ( ! empty( $c['fresh'] ) ) {
+				$fresh[ $opt ] = true;
+			}
+			$reverted++;
 		}
 		foreach ( $touched as $opt => $val ) {
-			update_option( $opt, $val );
+			if ( isset( $fresh[ $opt ] ) && empty( $val ) ) {
+				delete_option( $opt );
+			} else {
+				update_option( $opt, $val );
+			}
 		}
-		return array_keys( $touched );
+		return [ 'options' => array_keys( $touched ), 'reverted' => $reverted, 'skipped' => $skipped ];
 	}
 }
