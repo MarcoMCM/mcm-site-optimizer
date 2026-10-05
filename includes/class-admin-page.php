@@ -30,6 +30,7 @@ class MCM_Optimizer_Admin_Page {
 		add_action( 'wp_ajax_mcm_optimizer_scan', [ $this, 'ajax_scan' ] );
 		add_action( 'wp_ajax_mcm_optimizer_clean', [ $this, 'ajax_clean' ] );
 		add_action( 'wp_ajax_mcm_optimizer_health', [ $this, 'ajax_health_check' ] );
+		add_action( 'wp_ajax_mcm_optimizer_cron_dubbel', [ $this, 'ajax_cron_dubbel' ] );
 
 		// Health ping voor admin-ajax check.
 		add_action( 'wp_ajax_mcm_optimizer_health_ping', [ $this, 'ajax_health_ping' ] );
@@ -213,6 +214,26 @@ class MCM_Optimizer_Admin_Page {
 
 		$results = MCM_Health_Check::run_post_checks();
 		wp_send_json_success( $results );
+	}
+
+	/**
+	 * Knop "Ruim op" bij dubbel ingeplande cron-taken (Health Check). Haalt
+	 * alleen de extra kopieën weg; elke taak blijft één keer ingepland.
+	 */
+	public function ajax_cron_dubbel() {
+		check_ajax_referer( 'mcm_optimizer_ajax', 'nonce' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Geen toegang.' );
+		}
+
+		$result = MCM_Health_Check::cron_dubbel_opruimen();
+		MCM_Database_Cleaner::log_action( 'cron_dubbel', $result );
+
+		wp_send_json_success( [
+			'result' => $result,
+			'check'  => MCM_Health_Check::check_cron(),
+		] );
 	}
 
 	public function ajax_health_ping() {
@@ -462,6 +483,7 @@ class MCM_Optimizer_Admin_Page {
 			'autoloaded_options'    => 'Autoloaded Options',
 			'action_scheduler'      => 'Action Scheduler',
 			'orphaned_plugin_options' => 'Verweesde plugin-opties',
+			'cron_dubbel'           => 'Dubbele cron-taken',
 		];
 	}
 
@@ -934,17 +956,13 @@ jQuery(document).ready(function($) {
 
 			var d = response.data;
 			var html = '';
+			var aandacht = 0;
 
-			// Checks.
+			// Checks. 'warn' = aandachtspunt (site draait gewoon), met evt. een knop.
 			for (var key in d.checks) {
 				var check = d.checks[key];
-				var icon = check.passed ? 'yes-alt' : 'warning';
-				var cls = check.passed ? 'mcm-opt-health-pass' : 'mcm-opt-health-fail';
-
-				html += '<div class="mcm-opt-health-row ' + cls + '">';
-				html += '<span class="dashicons dashicons-' + icon + '"></span> ';
-				html += '<strong>' + check.label + '</strong>: ' + check.detail;
-				html += '</div>';
+				if (check.passed && check.warn) aandacht++;
+				html += healthRij(key, check.label, check.passed, check.warn, check.detail, check.actie);
 			}
 
 			// Vergelijking.
@@ -960,9 +978,11 @@ jQuery(document).ready(function($) {
 
 			// Overall status.
 			if (d.all_passed) {
-				html += '<div class="mcm-opt-alert mcm-opt-alert-safe" style="margin-top:15px;">';
+				html += '<div class="mcm-opt-alert mcm-opt-alert-safe mcm-opt-health-totaal" style="margin-top:15px;">';
 				html += '<span class="dashicons dashicons-yes-alt"></span> ';
-				html += 'Alle checks geslaagd — de site draait correct!';
+				html += '<span class="mcm-opt-health-totaal-tekst">' + (aandacht
+					? 'De site draait correct. Hierboven staat iets dat je kunt opruimen.'
+					: 'Alle checks geslaagd — de site draait correct!') + '</span>';
 				html += '</div>';
 			} else {
 				html += '<div class="mcm-opt-alert mcm-opt-alert-danger" style="margin-top:15px;">';
@@ -975,6 +995,44 @@ jQuery(document).ready(function($) {
 			$('#mcm-clean-all').text('Opschoning voltooid').prop('disabled', true);
 		});
 	}
+
+	function healthRij(key, label, passed, warn, detail, actie) {
+		var stand = !passed ? 'fail' : (warn ? 'warn' : 'pass');
+		var icon = { fail: 'warning', warn: 'info', pass: 'yes-alt' }[stand];
+		return '<div class="mcm-opt-health-row mcm-opt-health-' + stand + '" data-check="' + esc(key) + '">' +
+			'<span class="dashicons dashicons-' + icon + '"></span> ' +
+			'<span class="mcm-opt-health-tekst"><strong>' + esc(label) + '</strong>: ' + esc(detail) + '</span>' +
+			(actie ? '<button type="button" class="button mcm-opt-health-actie" data-actie="' + esc(actie.type) + '">' + esc(actie.label) + '</button>' : '') +
+		'</div>';
+	}
+
+	// "Ruim op" bij dubbel ingeplande cron-taken: per taak blijft er één over.
+	$(document).on('click', '.mcm-opt-health-actie[data-actie="cron_dubbel"]', function() {
+		var btn = $(this);
+		var rij = btn.closest('.mcm-opt-health-row');
+		btn.prop('disabled', true).text('Bezig...');
+
+		$.post(mcmOptimizer.ajaxUrl, {
+			action: 'mcm_optimizer_cron_dubbel',
+			nonce: mcmOptimizer.nonce
+		}, function(response) {
+			if (!response.success) {
+				btn.prop('disabled', false).text('Opnieuw');
+				alert('Opruimen mislukt: ' + (response.data || 'Onbekende fout'));
+				return;
+			}
+			var n = parseInt(response.data.result.deleted, 10) || 0;
+			var c = response.data.check;
+			var tekst = (n === 1 ? '1 dubbele inplanning' : n + ' dubbele inplanningen') + ' weggehaald. ' + c.message;
+			rij.replaceWith(healthRij('cron', 'Cron-taken', c.ok, c.warn, tekst, c.actie));
+			if (!$('#mcm-health-results .mcm-opt-health-warn').length) {
+				$('.mcm-opt-health-totaal-tekst').text('Alle checks geslaagd — de site draait correct!');
+			}
+		}).fail(function(xhr) {
+			btn.prop('disabled', false).text('Opnieuw');
+			alert('Verbindingsfout (HTTP ' + (xhr.status || '?') + ').');
+		});
+	});
 });
 JS;
 	}
@@ -1274,6 +1332,23 @@ JS;
 }
 .mcm-opt-health-fail .dashicons {
 	color: var(--mcm-terracotta);
+}
+.mcm-opt-health-warn {
+	background: rgba(231, 142, 70, 0.12);
+}
+.mcm-opt-health-warn .dashicons {
+	color: var(--mcm-primary-dark);
+}
+.mcm-opt-health-row .dashicons {
+	flex: none;
+}
+.mcm-opt-health-tekst {
+	flex: 1;
+	line-height: 1.45;
+}
+.mcm-opt-health-actie {
+	flex: none;
+	font-size: 12px !important;
 }
 .mcm-opt-health-comparison {
 	padding: 12px;
